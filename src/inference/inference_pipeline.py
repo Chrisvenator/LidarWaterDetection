@@ -130,10 +130,10 @@ def deep_predict_subset(feat_df_sub, grids_all, orig_rows, stats, model_path,
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
-    feat_path  = ROOT / 'data_processed' / 'features_v2.csv'
+    feat_path  = ROOT / 'data_processed' / 'features_current.csv'
     grids_path = ROOT / 'data_processed' / 'waveform_grids.npy'
-    models_dir = ROOT / 'models' / 'v4-staged-cascade'
-    out_path   = ROOT / 'pointclouds' / 'labeled_pointcloud_v4_staged.csv'
+    models_dir = ROOT / 'models' / 'current'
+    out_path   = ROOT / 'pointclouds' / 'labeled_pointcloud_current.csv'
 
     print(f"Loading {feat_path} …")
     feat_df = pd.read_csv(feat_path)
