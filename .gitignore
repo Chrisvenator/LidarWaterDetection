@@ -2,3 +2,6 @@
 .idea
 /.claude/
 /data/
+/models/
+/data_processed/
+/pointclouds/
