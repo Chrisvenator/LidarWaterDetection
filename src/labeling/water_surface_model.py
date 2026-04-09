@@ -60,10 +60,12 @@ MODEL_DIR  = ROOT / "models"         / "current"
 OUT_PATH   = ROOT / "pointclouds"    / "labeled_pointcloud_current.csv"
 
 # ── Footprint parameters ───────────────────────────────────────────────────────
-FOOTPRINT_CONF    = 0.8    # minimum mean(xgb_proba, deep_proba) for anchor
-RIVERBED_Z_MAX    = 259.6  # z < this = underwater / riverbed (v6 zone boundary)
-HULL_RATIO        = 0.2    # concave_hull tightness  (lower = tighter)
-FOOTPRINT_EROSION = 0.5    # erode inward by this many metres (conservative)
+FOOTPRINT_CONF         = 0.8    # minimum mean(xgb_proba, deep_proba) for tier-1 anchor
+FOOTPRINT_CONF_SURFACE = 0.85   # higher threshold for tier-2 surface anchors
+RIVERBED_Z_MAX         = 259.6  # z < this = underwater / riverbed (v6 zone boundary)
+RIVERBED_Z_SURFACE_MAX = 261.5  # z < this for tier-2 surface water anchors
+HULL_RATIO             = 0.2    # concave_hull tightness  (lower = tighter)
+FOOTPRINT_EROSION      = 0.5    # erode inward by this many metres (conservative)
 
 # ── Local surface grid ─────────────────────────────────────────────────────────
 CELL_SIZE         = 2.0    # metres per grid cell
@@ -106,19 +108,28 @@ ALL_FEATURES = WAVEFORM_FEATURES + RELATIVE_FEATURES
 
 def build_tight_footprint(feat_df, v6_df):
     """
-    Concave hull of high-confidence riverbed detections, eroded inward.
+    Concave hull of high-confidence water detections, eroded inward.
 
-    Anchor selection: ensemble=1, mean_conf ≥ FOOTPRINT_CONF, z < RIVERBED_Z_MAX
-    → these are the most certain laser-hit-the-bottom points, giving the
-    tightest possible river-channel boundary.
+    Two-tier anchor selection:
+      Tier 1: ensemble=1, conf ≥ FOOTPRINT_CONF, z < RIVERBED_Z_MAX
+              → certain laser-hit-the-bottom points (deepest, most reliable)
+      Tier 2: ensemble=1, conf ≥ FOOTPRINT_CONF_SURFACE, z < RIVERBED_Z_SURFACE_MAX
+              → water-surface returns in shallow/bend sections where the laser
+              does not reach the riverbed (covers river turns missed by tier-1)
     """
     mc     = (v6_df["xgb_proba"].values + v6_df["deep_proba"].values) * 0.5
-    anchor = ((v6_df["ensemble"].values == 1)
-              & (mc >= FOOTPRINT_CONF)
-              & (feat_df["z"].values < RIVERBED_Z_MAX))
+    z      = feat_df["z"].values
+    ens    = v6_df["ensemble"].values
+
+    tier1  = (ens == 1) & (mc >= FOOTPRINT_CONF) & (z < RIVERBED_Z_MAX)
+    tier2  = (ens == 1) & (mc >= FOOTPRINT_CONF_SURFACE) & (z < RIVERBED_Z_SURFACE_MAX)
+    anchor = tier1 | tier2
     n_anchor = int(anchor.sum())
-    print(f"  Riverbed anchors (conf≥{FOOTPRINT_CONF}, z<{RIVERBED_Z_MAX}m): "
-          f"{n_anchor:,}")
+    print(f"  Tier-1 riverbed anchors (conf≥{FOOTPRINT_CONF}, z<{RIVERBED_Z_MAX}m): "
+          f"{int(tier1.sum()):,}")
+    print(f"  Tier-2 surface  anchors (conf≥{FOOTPRINT_CONF_SURFACE}, z<{RIVERBED_Z_SURFACE_MAX}m): "
+          f"{int((tier2 & ~tier1).sum()):,}  (additional)")
+    print(f"  Total anchors: {n_anchor:,}")
 
     xw = feat_df["x"].values[anchor]
     yw = feat_df["y"].values[anchor]
@@ -126,9 +137,13 @@ def build_tight_footprint(feat_df, v6_df):
     mp        = MultiPoint(np.column_stack([xw, yw]))
     raw_hull  = concave_hull(mp, ratio=HULL_RATIO)
 
-    # Take largest polygon if MultiPolygon
+    # If MultiPolygon (river bend can create disconnected islands), keep ALL parts
+    # so the bend is not silently discarded.
     if isinstance(raw_hull, MultiPolygon):
-        raw_hull = max(raw_hull.geoms, key=lambda g: g.area)
+        n_parts = len(raw_hull.geoms)
+        print(f"  WARNING: concave hull produced {n_parts} polygons — keeping all parts")
+        # union preserves the full geometry as a (possibly MultiPolygon) shape
+        raw_hull = raw_hull.buffer(0)   # repairs topology; keeps all geoms
 
     footprint = raw_hull.buffer(-FOOTPRINT_EROSION)
     if footprint.is_empty:
@@ -633,6 +648,13 @@ def export_and_plot(feat_df, in_footprint, local_surface_z, merged_label,
     cm = {0:"saddlebrown", 1:"steelblue", 2:"gold"}
     lm = {0:"Land", 1:"Water", 2:"Uncertain"}
 
+    def _plot_poly(ax, geom, **kwargs):
+        """Plot a Polygon or MultiPolygon boundary on ax."""
+        geoms = geom.geoms if isinstance(geom, MultiPolygon) else [geom]
+        for g in geoms:
+            xy = np.array(g.exterior.coords)
+            ax.plot(xy[:,0], xy[:,1], **kwargs)
+
     # ── Plot 1: top-down scatter ───────────────────────────────────────────────
     fig, axes = plt.subplots(1,2,figsize=(22,9))
     for ax, (arr, title) in zip(axes, [
@@ -645,12 +667,11 @@ def export_and_plot(feat_df, in_footprint, local_surface_z, merged_label,
             ax.scatter(x[m],y[m],c=cm[lv],s=0.4,alpha=0.6,
                        label=f"{lm[lv]} ({m.sum():,})",rasterized=True)
         # Tight footprint boundary
-        fp_xy = np.array(footprint_poly.exterior.coords)
-        ax.plot(fp_xy[:,0],fp_xy[:,1],"k-",lw=1.5,label="Tight footprint",zorder=6)
+        _plot_poly(ax, footprint_poly, color="k", lw=1.5, label="Tight footprint",
+                   zorder=6)
         # Raw hull (before erosion)
-        rh_xy = np.array(raw_hull.exterior.coords)
-        ax.plot(rh_xy[:,0],rh_xy[:,1],"k--",lw=0.8,alpha=0.5,
-                label="Raw hull",zorder=5)
+        _plot_poly(ax, raw_hull, color="k", lw=0.8, alpha=0.5, linestyle="--",
+                   label="Raw hull", zorder=5)
         ax.set_aspect("equal"); ax.set_xlabel("x (m)"); ax.set_ylabel("y (m)")
         ax.set_title(title); ax.legend(markerscale=6,fontsize=8)
     plt.suptitle("v8 Adaptive Surface Model — Top-down view\n"
@@ -668,8 +689,7 @@ def export_and_plot(feat_df, in_footprint, local_surface_z, merged_label,
                    aspect="auto", cmap="Blues_r",
                    vmin=grid_z.min(), vmax=grid_z.max())
     plt.colorbar(im, ax=ax, label="Estimated water surface z (m)")
-    fp_xy = np.array(footprint_poly.exterior.coords)
-    ax.plot(fp_xy[:,0],fp_xy[:,1],"k-",lw=1.5,label="Tight footprint")
+    _plot_poly(ax, footprint_poly, color="k", lw=1.5, label="Tight footprint")
     ax.set_xlabel("x (m)"); ax.set_ylabel("y (m)")
     ax.set_title(f"Local water surface grid ({CELL_SIZE}m cells, "
                  f"Gaussian σ={SMOOTH_SIGMA})\n"
