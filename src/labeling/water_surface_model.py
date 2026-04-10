@@ -44,6 +44,7 @@ import torch
 import torch.nn as nn
 from scipy.ndimage import gaussian_filter
 from scipy.interpolate import griddata
+from scipy.spatial import KDTree
 from shapely import concave_hull, MultiPoint, contains_xy
 from shapely.geometry import MultiPolygon, Polygon
 from sklearn.linear_model import RANSACRegressor, LinearRegression
@@ -66,6 +67,7 @@ RIVERBED_Z_MAX         = 259.6  # z < this = underwater / riverbed (v6 zone boun
 RIVERBED_Z_SURFACE_MAX = 261.5  # z < this for tier-2 surface water anchors
 HULL_RATIO             = 0.2    # concave_hull tightness  (lower = tighter)
 FOOTPRINT_EROSION      = 0.5    # erode inward by this many metres (conservative)
+TIER2_MAX_DIST_FROM_T1 = 10.0   # max metres a tier-2 anchor may be from any tier-1 anchor
 
 # ── Local surface grid ─────────────────────────────────────────────────────────
 CELL_SIZE         = 2.0    # metres per grid cell
@@ -77,6 +79,7 @@ SURF_REFL_MAX     = -15.0  # weak reflectance = water surface at 532 nm
 SURF_Z_CAP        = 261.0  # cap estimated surface to avoid outlier cells
 SURF_MIN_PTS      = 5      # min water-like pts per cell for primary estimate
 SMOOTH_SIGMA      = 1.0    # Gaussian kernel width in cell units
+SURF_MAX_T1_DIST  = 12.0   # surface grid cells >this many metres from any tier-1 anchor use RANSAC fallback
 
 # ── Classification thresholds ──────────────────────────────────────────────────
 WATER_TOL = 0.30   # inside footprint, z ≤ surface + this → WATER
@@ -123,12 +126,33 @@ def build_tight_footprint(feat_df, v6_df):
 
     tier1  = (ens == 1) & (mc >= FOOTPRINT_CONF) & (z < RIVERBED_Z_MAX)
     tier2  = (ens == 1) & (mc >= FOOTPRINT_CONF_SURFACE) & (z < RIVERBED_Z_SURFACE_MAX)
-    anchor = tier1 | tier2
+
+    # Proximity filter: only keep tier-2 anchors within TIER2_MAX_DIST_FROM_T1 metres
+    # of a tier-1 (riverbed) anchor.  This prevents surface water-like returns in
+    # non-river areas (wet meadows, puddles) from spiking the concave hull.
+    tier2_only = tier2 & ~tier1
+    n_t2_raw = int(tier2_only.sum())
+    if tier1.sum() > 0 and n_t2_raw > 0:
+        xy1 = np.column_stack([feat_df["x"].values[tier1], feat_df["y"].values[tier1]])
+        xy2 = np.column_stack([feat_df["x"].values[tier2_only], feat_df["y"].values[tier2_only]])
+        tree1 = KDTree(xy1)
+        dists, _ = tree1.query(xy2)
+        near = dists <= TIER2_MAX_DIST_FROM_T1
+        t2_idx = np.where(tier2_only)[0]
+        filtered_tier2 = np.zeros(len(feat_df), dtype=bool)
+        filtered_tier2[t2_idx[near]] = True
+        n_removed = int((~near).sum())
+        print(f"  Tier-2 proximity filter: kept {int(near.sum()):,} / {n_t2_raw:,} "
+              f"(removed {n_removed} isolated surface anchors >{TIER2_MAX_DIST_FROM_T1}m from tier-1)")
+        anchor = tier1 | filtered_tier2
+    else:
+        anchor = tier1 | tier2_only
+
     n_anchor = int(anchor.sum())
     print(f"  Tier-1 riverbed anchors (conf≥{FOOTPRINT_CONF}, z<{RIVERBED_Z_MAX}m): "
           f"{int(tier1.sum()):,}")
     print(f"  Tier-2 surface  anchors (conf≥{FOOTPRINT_CONF_SURFACE}, z<{RIVERBED_Z_SURFACE_MAX}m): "
-          f"{int((tier2 & ~tier1).sum()):,}  (additional)")
+          f"{int((anchor & ~tier1).sum()):,}  (after proximity filter)")
     print(f"  Total anchors: {n_anchor:,}")
 
     xw = feat_df["x"].values[anchor]
@@ -155,21 +179,34 @@ def build_tight_footprint(feat_df, v6_df):
 
     print(f"  Concave hull area      : {raw_hull.area:,.0f} m²")
     print(f"  Tight footprint (−{FOOTPRINT_EROSION}m): {footprint.area:,.0f} m²")
-    return footprint, raw_hull
+
+    # Return tier-1 xy so the surface grid can use it as a proximity guard
+    tier1_xy = np.column_stack([feat_df["x"].values[tier1],
+                                 feat_df["y"].values[tier1]])
+    return footprint, raw_hull, tier1_xy
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PHASE 2 — LOCAL ADAPTIVE SURFACE GRID
 # ══════════════════════════════════════════════════════════════════════════════
 
-def build_surface_grid(feat_df, v6_df):
+def build_surface_grid(feat_df, v6_df, tier1_xy=None):
     """
     Build a 2m-resolution grid of estimated water-surface elevations.
 
     Per cell, priority order:
       1. p95 z of water-like waveforms (n_peaks≤2, ec>0.85, refl<−15)
-         within z ∈ [SURF_Z_LO, SURF_Z_HI] and ≥ SURF_MIN_PTS points.
-      2. Global RANSAC plane value at cell centre (fallback for empty cells).
+         within z ∈ [SURF_Z_LO, SURF_Z_HI] and ≥ SURF_MIN_PTS points,
+         BUT only if the cell centre is within SURF_MAX_T1_DIST of a tier-1
+         anchor (riverbed point).  Cells too far from any riverbed return
+         fall back to the RANSAC plane to avoid spurious surface estimates.
+      2. Global RANSAC plane value at cell centre (fallback for empty/distant cells).
+
+    Parameters
+    ----------
+    tier1_xy : (N,2) float array or None
+        XY coordinates of tier-1 (riverbed) anchor points.  If None, the
+        proximity guard is skipped (all primary estimates are accepted).
 
     Returns
     -------
@@ -241,15 +278,33 @@ def build_surface_grid(feat_df, v6_df):
     yc = y_min + (yg + 0.5) * CELL_SIZE
     grid_z = (a * xc + b * yc + c).astype(np.float32)   # baseline = global plane
 
-    # Stamp primary estimates
+    # ── Proximity guard: build KDTree over tier-1 anchors if provided ─────────
+    if tier1_xy is not None and len(tier1_xy) > 0:
+        t1_tree = KDTree(tier1_xy)
+    else:
+        t1_tree = None
+
+    # ── Stamp primary estimates (skipping cells too far from tier-1 anchors) ──
+    n_primary_cells = 0
+    n_skipped_cells = 0
     for flat_idx, sz in surf_primary.items():
         iy = int(flat_idx) // n_x
         ix = int(flat_idx) %  n_x
         if 0 <= iy < n_y and 0 <= ix < n_x:
+            if t1_tree is not None:
+                xc_cell = x_min + (ix + 0.5) * CELL_SIZE
+                yc_cell = y_min + (iy + 0.5) * CELL_SIZE
+                dist, _ = t1_tree.query([[xc_cell, yc_cell]])
+                if dist[0] > SURF_MAX_T1_DIST:
+                    n_skipped_cells += 1
+                    continue   # keep RANSAC plane value for this cell
             grid_z[iy, ix] = sz
+            n_primary_cells += 1
 
-    n_primary_cells = len(surf_primary)
-    n_plane_cells   = n_x * n_y - n_primary_cells
+    if n_skipped_cells > 0:
+        print(f"  Surface proximity guard: skipped {n_skipped_cells} cells "
+              f">{SURF_MAX_T1_DIST}m from tier-1 anchors (RANSAC fallback used)")
+    n_plane_cells = n_x * n_y - n_primary_cells
     print(f"  Grid: {n_primary_cells} cells from local data, "
           f"{n_plane_cells} from RANSAC plane")
 
@@ -775,7 +830,7 @@ def main():
     print(f"\n{'='*60}")
     print("PHASE 1 — TIGHT RIVER FOOTPRINT")
     print(f"{'='*60}")
-    footprint_poly, raw_hull = build_tight_footprint(feat_df, v6_df)
+    footprint_poly, raw_hull, tier1_xy = build_tight_footprint(feat_df, v6_df)
     in_footprint = contains_xy(footprint_poly,
                                 feat_df["x"].values, feat_df["y"].values)
     print(f"  Points inside tight footprint: {in_footprint.sum():,} "
@@ -786,7 +841,7 @@ def main():
     print("PHASE 2 — LOCAL ADAPTIVE SURFACE GRID")
     print(f"{'='*60}")
     grid_z, x_min, y_min, n_x, n_y, xi, yi, plane_coef = \
-        build_surface_grid(feat_df, v6_df)
+        build_surface_grid(feat_df, v6_df, tier1_xy=tier1_xy)
 
     # Look up per-point local surface elevation
     local_surface_z = grid_z[yi, xi].astype(np.float32)
