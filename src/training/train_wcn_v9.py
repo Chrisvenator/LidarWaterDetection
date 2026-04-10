@@ -51,7 +51,7 @@ from torch.utils.data import DataLoader, Dataset
 ROOT        = Path(__file__).resolve().parent.parent.parent
 GRIDS_PATH  = ROOT / "data_processed" / "waveform_grids_norm.npy"
 FEAT_PATH   = ROOT / "data_processed" / "features_v9.csv"
-LABELS_PATH = ROOT / "pointclouds"    / "labeled_pointcloud_current.csv"
+LABELS_PATH = ROOT / "pointclouds"    / "labeled_pointcloud_wcn.csv"
 MODEL_DIR   = ROOT / "models"         / "wcn_v9"
 OUT_CSV     = ROOT / "pointclouds"    / "labeled_pointcloud_wcn.csv"
 
@@ -967,19 +967,22 @@ def export_results(
     out.to_csv(OUT_CSV, index=False)
     print(f"\n  Saved {N:,} rows → {OUT_CSV}")
 
-    # Top-down scatter
-    fig, axes = plt.subplots(1, 2, figsize=(22, 9))
+    x = feat_df["x"].values
+    y = feat_df["y"].values
+
     cmap = {0: "saddlebrown", 1: "steelblue", 2: "gold"}
     lmap = {0: "Land", 1: "Water", 2: "Uncertain"}
+
+    fig, axes = plt.subplots(1, 2, figsize=(22, 9))
     for ax, preds, title in [
-        (axes[0], ensemble, "WCN v9 Ensemble"),
-        (axes[1], orig_labels,  "v8 Labels (input)"),
+        (axes[0], ensemble,    "WCN v9 Ensemble"),
+        (axes[1], orig_labels, "v9 Labels (input)"),
     ]:
         for lv in [0, 1, 2]:
             m = preds == lv
             if m.any():
-                ax.scatter(feat_df["x"].values[m], feat_df["y"].values[m],
-                           s=0.5, c=cmap[lv], label=f"{lmap[lv]} ({m.sum():,})", rasterized=True)
+                ax.scatter(x[m], y[m], s=0.5, c=cmap[lv],
+                           label=f"{lmap[lv]} ({m.sum():,})", rasterized=True)
         ax.set_aspect("equal"); ax.set_xlabel("x (m)"); ax.set_ylabel("y (m)")
         ax.set_title(title); ax.legend(markerscale=10, loc="upper right")
     plt.tight_layout()
@@ -1018,10 +1021,10 @@ def main():
 
     print(f"Loading labels …")
     lab_df  = pd.read_csv(LABELS_PATH,
-                          usecols=["merged_label", "xgb_proba", "deep_proba"])
+                          usecols=["ensemble", "wcn_proba", "xgb_proba"])
     assert len(lab_df) == N
-    labels     = lab_df["merged_label"].values.astype(np.int8)
-    conf       = ((lab_df["xgb_proba"].values + lab_df["deep_proba"].values)
+    labels     = lab_df["ensemble"].values.astype(np.int8)
+    conf       = ((lab_df["wcn_proba"].values + lab_df["xgb_proba"].values)
                   * 0.5).astype(np.float32)
     weights    = np.where(labels == 1, conf, 1.0).astype(np.float32)
     print(f"  land={int((labels==0).sum()):,}  water={int((labels==1).sum()):,}  "

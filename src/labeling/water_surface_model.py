@@ -703,12 +703,32 @@ def export_and_plot(feat_df, in_footprint, local_surface_z, merged_label,
     cm = {0:"saddlebrown", 1:"steelblue", 2:"gold"}
     lm = {0:"Land", 1:"Water", 2:"Uncertain"}
 
-    def _plot_poly(ax, geom, **kwargs):
-        """Plot a Polygon or MultiPolygon boundary on ax."""
+    def _plot_poly(ax, geom, fill=False, fill_color=None, fill_alpha=0.12, **kwargs):
+        """Plot a Polygon or MultiPolygon boundary on ax, optionally filled."""
+        from matplotlib.patches import PathPatch
+        from matplotlib.path import Path as MplPath
         geoms = geom.geoms if isinstance(geom, MultiPolygon) else [geom]
+        color = kwargs.get("color", "k")
         for g in geoms:
+            # Exterior boundary
             xy = np.array(g.exterior.coords)
             ax.plot(xy[:,0], xy[:,1], **kwargs)
+            # Interior rings (holes)
+            for interior in g.interiors:
+                ixy = np.array(interior.coords)
+                ax.plot(ixy[:,0], ixy[:,1], **kwargs)
+            # Semi-transparent fill (exterior minus holes)
+            if fill:
+                verts, codes = [], []
+                for ring in [g.exterior] + list(g.interiors):
+                    rxy = np.array(ring.coords)
+                    codes += [MplPath.MOVETO] + [MplPath.LINETO] * (len(rxy)-2) + [MplPath.CLOSEPOLY]
+                    verts += list(rxy)
+                patch = PathPatch(MplPath(verts, codes),
+                                  facecolor=fill_color or color,
+                                  alpha=fill_alpha, edgecolor="none",
+                                  zorder=kwargs.get("zorder", 1) - 1)
+                ax.add_patch(patch)
 
     # ── Plot 1: top-down scatter ───────────────────────────────────────────────
     fig, axes = plt.subplots(1,2,figsize=(22,9))
@@ -721,12 +741,12 @@ def export_and_plot(feat_df, in_footprint, local_surface_z, merged_label,
             if not m.any(): continue
             ax.scatter(x[m],y[m],c=cm[lv],s=0.4,alpha=0.6,
                        label=f"{lm[lv]} ({m.sum():,})",rasterized=True)
-        # Tight footprint boundary
+        # Tight footprint boundary (filled so over-extension into land is visible)
         _plot_poly(ax, footprint_poly, color="k", lw=1.5, label="Tight footprint",
-                   zorder=6)
+                   fill=True, fill_color="steelblue", fill_alpha=0.10, zorder=6)
         # Raw hull (before erosion)
-        _plot_poly(ax, raw_hull, color="k", lw=0.8, alpha=0.5, linestyle="--",
-                   label="Raw hull", zorder=5)
+        _plot_poly(ax, raw_hull, color="grey", lw=0.8, linestyle="--",
+                   label="Raw hull (pre-erosion)", zorder=5)
         ax.set_aspect("equal"); ax.set_xlabel("x (m)"); ax.set_ylabel("y (m)")
         ax.set_title(title); ax.legend(markerscale=6,fontsize=8)
     plt.suptitle("v8 Adaptive Surface Model — Top-down view\n"
@@ -744,7 +764,8 @@ def export_and_plot(feat_df, in_footprint, local_surface_z, merged_label,
                    aspect="auto", cmap="Blues_r",
                    vmin=grid_z.min(), vmax=grid_z.max())
     plt.colorbar(im, ax=ax, label="Estimated water surface z (m)")
-    _plot_poly(ax, footprint_poly, color="k", lw=1.5, label="Tight footprint")
+    _plot_poly(ax, footprint_poly, color="k", lw=1.5, label="Tight footprint",
+               fill=True, fill_color="steelblue", fill_alpha=0.10, zorder=6)
     ax.set_xlabel("x (m)"); ax.set_ylabel("y (m)")
     ax.set_title(f"Local water surface grid ({CELL_SIZE}m cells, "
                  f"Gaussian σ={SMOOTH_SIGMA})\n"
