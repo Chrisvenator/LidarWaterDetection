@@ -1,18 +1,18 @@
 # Architecture: Water vs. Land Classifier — Implemented System
 
-**Updated 2026-04. Reflects the actual built and tested pipeline, not the original design doc.**
+**Updated 2026-04. Reflects actual built/tested pipeline, not original design doc.**
 
 ---
 
 ## 1. Overview
 
-The final system is a **three-stage pipeline**:
+Three-stage pipeline:
 
-1. **Waveform-only auto-labeler** (v6) — labels high-confidence riverbed points from physics
-2. **Adaptive water surface model** (v8) — uses riverbed anchors to define a tight 2D river footprint and a spatially varying water surface elevation; geometrically overrides uncertain waveform labels
-3. **Supervised ML** — XGBoost + V8Net (1D-CNN + MLP) trained on the propagated labels; ensemble of both
+1. **Waveform-only auto-labeler** (v6) — label high-conf riverbed pts from physics
+2. **Adaptive water surface model** (v8) — riverbed anchors → tight 2D footprint + spatially varying water surface; geometrically overrides uncertain waveform labels
+3. **Supervised ML** — XGBoost + V8Net (1D-CNN + MLP) on propagated labels; ensemble
 
-The pipeline has **no absolute z-threshold feature** in the ML models. All spatial features are relative (z_relative, height_above_local_min, height_percentile_local), making the models more portable across different river scenes.
+**No absolute z-threshold** in ML models. All spatial features relative (`z_relative`, `height_above_local_min`, `height_percentile_local`) → portable across rivers.
 
 ---
 
@@ -22,15 +22,15 @@ The pipeline has **no absolute z-threshold feature** in the ML models. All spati
 
 `src/labeling/auto_labeler_v6.py`
 
-Physics rules based on `energy_concentration`, `max_amp_norm_by_energy`, `n_peaks`, `n_gaps`, `depth_proxy_m`, `reflectance_dB`. No elevation gating.
+Physics rules: `energy_concentration`, `max_amp_norm_by_energy`, `n_peaks`, `n_gaps`, `depth_proxy_m`, `reflectance_dB`. No elevation gating.
 
-- Label 1 (water): compact, early waveform (SVB signature with high energy concentration)
+- Label 1 (water): compact, early waveform (SVB, high energy concentration)
 - Label 0 (land): complex multi-peak, high reflectance
 - Label 2 (uncertain): edge cases
 
-Produces: `pointclouds/labeled_pointcloud_v6_waveform_only.csv`
+Output: `pointclouds/labeled_pointcloud_v6_waveform_only.csv`
 
-**Key counter-intuitive finding**: Water waveforms are **compact and early** — high `energy_concentration`, high `max_amp_norm_by_energy`. Dry gravel produces **more peaks and gaps** than water (complex multi-return from coarse gravel surface). The SVB (Surface-Volume-Bottom) signature is the strongest discriminator.
+**Counter-intuitive**: Water = compact/early — high `energy_concentration`, high `max_amp_norm_by_energy`. Dry gravel = more peaks/gaps (coarse surface scatter). SVB signature = strongest discriminator.
 
 ### Stage B — Adaptive water surface model (v8)
 
@@ -39,25 +39,25 @@ Produces: `pointclouds/labeled_pointcloud_v6_waveform_only.csv`
 Four-step geometric override using v6 confident riverbed detections as anchors:
 
 **Step 1 — Tight river footprint**
-- Anchors: ensemble confidence > 0.8 AND z < 259.6 m (actual riverbed only, not water surface returns)
-- `shapely.concave_hull(points, ratio=0.2)` → very tight polygon
-- Erode inward by 0.5 m: `hull.buffer(-0.5)` — removes uncertain boundary
-- Result: ~974 m², 41.3% of 234k points inside (vs. 66.5% with the naive approach)
+- Anchors: ensemble conf > 0.8 AND z < 259.6 m (riverbed only, not water surface returns)
+- `shapely.concave_hull(points, ratio=0.2)` → tight polygon
+- Erode inward 0.5 m: `hull.buffer(-0.5)` — removes uncertain boundary
+- Result: ~974 m², 41.3% of 234k pts inside (vs. 66.5% naive)
 
 **Step 2 — Adaptive 2m surface grid**
 - Divide footprint into 2m × 2m cells
-- Primary: p95 of z for water-like waveforms (`n_peaks ≤ 2`, `energy_concentration > 0.85`, `reflectance_dB < -15`, `z ∈ [259.0, 261.5]`) — min 5 pts/cell required
-- Fallback: global RANSAC plane for cells with < 5 qualifying points
-- Apply `scipy.ndimage.gaussian_filter(sigma=1)` to smooth grid
-- RANSAC plane coefficients: z ≈ -0.002148·x − 0.000183·y + 259.481 (gradient ~ 0.21 m/100m along flow)
-- Grid: 37 × 22 cells, max Δz = 0.915 m across the footprint
+- Primary: p95 of z for water-like waveforms (`n_peaks ≤ 2`, `energy_concentration > 0.85`, `reflectance_dB < -15`, `z ∈ [259.0, 261.5]`) — min 5 pts/cell
+- Fallback: global RANSAC plane for cells < 5 qualifying pts
+- `scipy.ndimage.gaussian_filter(sigma=1)` smooth grid
+- RANSAC plane: z ≈ -0.002148·x − 0.000183·y + 259.481 (gradient ~0.21 m/100m along flow)
+- Grid: 37 × 22 cells, max Δz = 0.915 m
 
 **Step 3 — Geometric classification inside footprint**
-- Inside footprint AND z ≤ local_surface_z + 0.3 m → **WATER** (unconditional — handles deep/turbid sections where waveform fails)
+- Inside footprint AND z ≤ local_surface_z + 0.3 m → **WATER** (handles deep/turbid where waveform fails)
 - Inside footprint AND z > local_surface_z + 0.3 m → **LAND** (exposed rock/gravel shelf)
 
 **Step 4 — Outside footprint**
-- Use v6 waveform prediction: water → **UNCERTAIN** (shallow margins), land → **LAND**
+- v6 waveform prediction: water → **UNCERTAIN** (shallow margins), land → **LAND**
 
 Results: water=43,867 (18.7%), land=148,985 (63.6%), uncertain=41,172 (17.6%)
 
@@ -100,11 +100,11 @@ class V8Net(nn.Module):
         return self.head(torch.cat([self.wf(wf).squeeze(-1), self.sp(sp)], 1))
 ```
 
-**CRITICAL**: No Dropout anywhere. The `Stage2Net` in `inference_pipeline.py` uses the same architecture. Any divergence causes `load_state_dict()` failures.
+**CRITICAL**: No Dropout anywhere. `Stage2Net` in `inference_pipeline.py` uses same architecture. Any divergence causes `load_state_dict()` failures.
 
-**Waveform input**: 200-bin dense grid, origin-relative (waveform shifted so first sample = bin 0). Stored in `data_processed/waveform_grids.npy` (shape: 234024 × 200, float32).
+**Waveform input**: 200-bin dense grid, origin-relative (first sample = bin 0). Stored in `data_processed/waveform_grids.npy` (234024 × 200, float32).
 
-**Z-score normalization**: Grid normalized globally (`grid_mean`, `grid_std`); spatial features normalized per-column. Stats saved to `models/v8-surface-v2/stage2_deep_stats.json`.
+**Z-score normalization**: Grid normalized globally (`grid_mean`, `grid_std`); spatial features per-column. Stats saved to `models/v8-surface-v2/stage2_deep_stats.json`.
 
 ---
 
@@ -145,9 +145,9 @@ RELATIVE_FEATURES = [
 # Total: 23 + 9 = 32 features (n_spatial=32)
 ```
 
-**Why RELATIVE_FEATURES are now safe**: Previous versions excluded `height_above_local_min` because labels were z-gated (circular reasoning: low z → water → low height). With v8 labels coming from geometric footprint + waveform physics (not z-thresholds), these relative height features are valid and highly discriminative.
+**Why RELATIVE_FEATURES now safe**: Previous versions excluded `height_above_local_min` — labels were z-gated (circular: low z → water → low height). V8 labels from geometric footprint + waveform physics (not z-thresholds) → relative height features valid, highly discriminative.
 
-**Do NOT use absolute z as a model feature** — it prevents generalization to rivers at different elevations.
+**Do NOT use absolute z as model feature** — prevents generalization to other rivers.
 
 ---
 
@@ -167,7 +167,7 @@ xgb.XGBClassifier(
 )
 ```
 
-Training uses spatial cross-validation (5 folds split by y-coordinate strips) to prevent leakage from spatial autocorrelation.
+Spatial cross-validation (5 folds by y-coordinate strips) prevents leakage from spatial autocorrelation.
 
 ---
 
@@ -211,7 +211,7 @@ for fold in range(5):
     # Train and evaluate on hold-out strip
 ```
 
-This avoids spatial leakage — LiDAR points are highly autocorrelated within ~1 m radius, so a random split would leak information.
+Avoids spatial leakage — LiDAR pts highly autocorrelated within ~1 m radius; random split leaks info.
 
 ### Deep Model Training
 
@@ -223,7 +223,7 @@ batch_sz  = 512
 patience  = 10  # early stopping on val focal loss
 ```
 
-Train/val split: 80/20 random (spatial strips used for XGBoost CV, random split for deep model training with waveform features).
+Train/val: 80/20 random (spatial strips for XGBoost CV, random split for deep model).
 
 ---
 
@@ -257,7 +257,7 @@ Final classes: **0 = land**, **1 = water**, **2 = uncertain**
 | Ensemble | Agreement rate | 95.7% |
 | Ensemble | Final water points | 41,442 (17.7%) |
 
-**Class distribution in output** (`labeled_pointcloud_v8.csv`):
+Class distribution (`labeled_pointcloud_v8.csv`):
 - 0 land: ~148,000 (63%)
 - 1 water: ~41,442 (17.7%)
 - 2 uncertain: ~44,000 (18.8%)
@@ -268,42 +268,42 @@ Final classes: **0 = land**, **1 = water**, **2 = uncertain**
 
 ### Counter-intuitive waveform physics
 
-**Water waveforms are compact and early**, not complex:
-- High `energy_concentration` (most energy in first few bins after t_min)
+**Water = compact/early**:
+- High `energy_concentration` (energy in first bins after t_min)
 - High `max_amp_norm_by_energy` (dominant peak carries most signal)
-- Low `n_peaks`, low `n_gaps` (clean SVB return, not scattered)
+- Low `n_peaks`, low `n_gaps` (clean SVB return)
 
-**Dry gravel waveforms are complex**:
-- Multiple peaks from grain-scale scattering
-- More gaps than water returns
+**Dry gravel = complex**:
+- Multiple peaks from grain-scale scatter
+- More gaps than water
 - Lower `energy_concentration`
 
-This is the opposite of initial intuition (which expected water to produce complex multi-return waveforms from water column traversal). The v1 labeler using `n_gaps ≥ 3` to detect water was almost entirely wrong.
+Opposite of initial intuition. v1 labeler using `n_gaps ≥ 3` for water was almost entirely wrong.
 
 ### Refraction and the spatial shift problem
 
-The SVB physics means bottom returns are **laterally displaced** from the surface returns above them (Snell's law, n_water=1.333). A spatial propagation approach ("if bottom detected at x,y, water must be above") fails because the surface is 10-30 cm horizontally offset from the bottom detection. This is why the 2D footprint + water surface approach works better than vertical propagation.
+SVB physics: bottom returns **laterally displaced** from surface returns (Snell's law, n_water=1.333). Spatial propagation ("if bottom at x,y → water above") fails — surface offset 10-30 cm horizontally. 2D footprint + water surface beats vertical propagation.
 
 ### height_above_local_min as discriminator
 
-Water sits at the **valley floor** — its `height_above_local_min` ≈ 0 by definition (the river IS the local minimum). Bank and gravel bar points have positive values. This is a strong, physically meaningful discriminator that doesn't require knowing the absolute elevation.
+Water at **valley floor** → `height_above_local_min` ≈ 0. Bank/gravel pts > 0. Strong physically meaningful discriminator, no absolute elevation needed.
 
-**Exception**: `height_above_local_min_10m` uses a 10 m radius — in this narrow valley, the river provides the 10 m minimum for adjacent bank points too, making it a canopy detector at large radius but not a water detector.
+**Exception**: `height_above_local_min_10m` (10 m radius) — river provides 10 m minimum for adjacent bank pts → canopy detector at large radius, not water detector.
 
-### z_water_max and the turbid-water problem
+### z_water_max and turbid-water problem
 
-Deep or turbid sections produce only a surface return (no bottom penetration). Without the waveform v6 anchor, these look like land (single clean return). The geometric footprint override solves this: inside the tight footprint + z ≤ surface_z + 0.3 m → WATER unconditionally.
+Deep/turbid sections → surface return only (no bottom penetration) → looks like land (single clean return). Footprint override solves: inside tight footprint + z ≤ surface_z + 0.3 m → WATER unconditionally.
 
 ---
 
 ## 11. Two-Stage Cascade vs. Flat Classifier
 
-The v4 pipeline also implemented a two-stage cascade (canopy → ground → water vs. dry), but this was superseded by the v8 approach which:
-- Uses waveform physics for initial labeling (not absolute z)
-- Uses the river footprint for geometric context
-- Handles the water surface with a spatially adaptive model
+v4 had two-stage cascade (canopy → ground → water/dry), superseded by v8:
+- Waveform physics for initial labeling (not absolute z)
+- River footprint for geometric context
+- Spatially adaptive water surface
 
-The v4 cascade (`models/v4-staged-cascade/`) is still functional and produces `labeled_pointcloud_v4_staged.csv`. The v8 approach is preferred because labels are physics-derived, not z-gated.
+v4 cascade (`models/v4-staged-cascade/`) still functional → `labeled_pointcloud_v4_staged.csv`. v8 preferred: physics-derived labels, not z-gated.
 
 ---
 
@@ -336,16 +336,16 @@ def waveform_to_grid(times, amps, grid_size=200, noise_floor=0.0):
     return grid
 ```
 
-Origin-relative representation: each waveform starts at bin 0. This removes sensor altitude dependency (absolute time origin) while preserving within-waveform structure (peak spacing, gap sizes). The 200-bin window covers all observed waveform spans (max observed span: ~163 bins).
+Origin-relative: each waveform starts at bin 0. Removes sensor altitude dependency (absolute time origin), preserves within-waveform structure (peak spacing, gap sizes). 200-bin window covers all observed spans (max: ~163 bins).
 
 ---
 
 ## 14. Remaining Limitations
 
-1. **Shallow water (< 20 cm depth)**: Surface and bottom echoes overlap — waveform looks like a single hard-surface return. These are classified as land. Unavoidable with SVB decomposition; affects ~20% of river edge points.
+1. **Shallow water (< 20 cm)**: Surface + bottom echoes overlap → looks like single hard-surface return → classified as land. Unavoidable with SVB decomposition; affects ~20% of river edge pts.
 
-2. **Calm water / specular reflection**: Low scan-angle, smooth water → very strong first peak with no bottom return → may classify as land. The footprint override mitigates this for points inside the river polygon.
+2. **Calm water / specular reflection**: Low scan-angle, smooth water → strong first peak, no bottom return → may classify as land. Footprint override mitigates for pts inside river polygon.
 
-3. **Survey-specific turbidity**: Waveform features were tuned for October 2024 conditions (good water clarity). Different turbidity changes the optimal `energy_concentration` threshold.
+3. **Survey-specific turbidity**: Waveform features tuned for October 2024 (good water clarity). Different turbidity changes optimal `energy_concentration` threshold.
 
-4. **Generalization to other rivers**: The tight-footprint approach requires confident riverbed detections as anchors. A turbid river with no bottom penetration would produce no anchors and the footprint could not be constructed. Future work: use a priori river centerline from external map data.
+4. **Generalization to other rivers**: Tight footprint requires confident riverbed detections as anchors. Turbid river with no bottom penetration → no anchors, footprint can't be built. Future: use a priori river centerline from external map.
