@@ -34,6 +34,7 @@ import json
 import math
 import os
 import random
+import sys
 from pathlib import Path
 
 import matplotlib
@@ -49,6 +50,11 @@ from sklearn.metrics import f1_score, roc_auc_score
 from torch.utils.data import DataLoader, Dataset
 
 ROOT        = Path(__file__).resolve().parent.parent.parent
+sys.path.insert(0, str(ROOT / "src"))
+from labeling.river_boundary import (  # noqa: E402
+    CANOPY_Z_MAX, PROB_INNER, PROB_CENTER, PROB_OUTER,
+    rasterize, fill_and_smooth, extract_contours, _draw_contours,
+)
 GRIDS_PATH  = ROOT / "data_processed" / "waveform_grids_norm.npy"
 FEAT_PATH   = ROOT / "data_processed" / "features_v9.csv"
 LABELS_PATH = ROOT / "pointclouds"    / "labeled_pointcloud_wcn.csv"
@@ -969,22 +975,41 @@ def export_results(
 
     x = feat_df["x"].values
     y = feat_df["y"].values
+    z = feat_df["z"].values
+    nc = z <= CANOPY_Z_MAX   # non-canopy mask
 
     cmap = {0: "saddlebrown", 1: "steelblue", 2: "gold"}
     lmap = {0: "Land", 1: "Water", 2: "Uncertain"}
 
+    # Compute river boundary contours from wcn_proba
+    print("\n  Computing river boundary contours for scatter …")
+    grid_raw, x_min, y_min, n_x, n_y = rasterize(x, y, wcn_proba)
+    grid_smooth = fill_and_smooth(grid_raw)
+    contours = extract_contours(grid_smooth, x_min, y_min)
+
     fig, axes = plt.subplots(1, 2, figsize=(22, 9))
     for ax, preds, title in [
-        (axes[0], ensemble,    "WCN v9 Ensemble"),
-        (axes[1], orig_labels, "v9 Labels (input)"),
+        (axes[0], ensemble[nc],    f"WCN v9 Ensemble — no canopy (z ≤ {CANOPY_Z_MAX}m)"),
+        (axes[1], orig_labels[nc], f"v9 Labels (input) — no canopy (z ≤ {CANOPY_Z_MAX}m)"),
     ]:
+        xs, ys = x[nc], y[nc]
         for lv in [0, 1, 2]:
             m = preds == lv
             if m.any():
-                ax.scatter(x[m], y[m], s=0.5, c=cmap[lv],
+                ax.scatter(xs[m], ys[m], s=0.5, c=cmap[lv],
                            label=f"{lmap[lv]} ({m.sum():,})", rasterized=True)
+        _draw_contours(ax, contours)
         ax.set_aspect("equal"); ax.set_xlabel("x (m)"); ax.set_ylabel("y (m)")
-        ax.set_title(title); ax.legend(markerscale=10, loc="upper right")
+        ax.set_title(title)
+        handles, labels_leg = ax.get_legend_handles_labels()
+        by_label = dict(zip(labels_leg, handles))
+        ax.legend(by_label.values(), by_label.keys(),
+                  markerscale=10, loc="upper right", fontsize=7)
+    plt.suptitle(
+        f"River boundary — inner p={PROB_INNER} (white) · "
+        f"center p={PROB_CENTER} (yellow) · outer p={PROB_OUTER} (orange)",
+        fontsize=11,
+    )
     plt.tight_layout()
     plt.savefig(out_dir / "topdown_scatter.png", dpi=150); plt.close()
     print(f"  Plot → {out_dir / 'topdown_scatter.png'}")

@@ -32,6 +32,7 @@ Merged label values:
 
 import json
 import os
+import sys
 from pathlib import Path
 
 import matplotlib
@@ -52,6 +53,11 @@ from torch.utils.data import Dataset, DataLoader
 from sklearn.metrics import f1_score, roc_auc_score, classification_report
 
 ROOT = Path(__file__).resolve().parent.parent.parent
+sys.path.insert(0, str(ROOT / "src"))
+from labeling.river_boundary import (  # noqa: E402
+    CANOPY_Z_MAX, PROB_INNER, PROB_CENTER, PROB_OUTER,
+    rasterize, fill_and_smooth, extract_contours, _draw_contours,
+)
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
 V6_WF_CSV  = ROOT / "pointclouds"    / "labeled_pointcloud_waveform_only.csv"
@@ -730,16 +736,25 @@ def export_and_plot(feat_df, in_footprint, local_surface_z, merged_label,
                                   zorder=kwargs.get("zorder", 1) - 1)
                 ax.add_patch(patch)
 
-    # ── Plot 1: top-down scatter ───────────────────────────────────────────────
+    # ── Plot 1: top-down scatter (non-canopy + river boundary contours) ──────────
+    nc = z <= CANOPY_Z_MAX   # non-canopy mask
+
+    mean_proba = (xgb_proba + deep_proba) / 2.0
+    print("\n  Computing river boundary contours for scatter …")
+    grid_raw, rb_x_min, rb_y_min, rb_n_x, rb_n_y = rasterize(x, y, mean_proba)
+    grid_smooth = fill_and_smooth(grid_raw)
+    rb_contours = extract_contours(grid_smooth, rb_x_min, rb_y_min)
+
     fig, axes = plt.subplots(1,2,figsize=(22,9))
     for ax, (arr, title) in zip(axes, [
-        (merged_label, "Merged Labels (surface model + waveform)"),
-        (ensemble,     "v8 Retrained Ensemble (XGBoost + V8Net)"),
+        (merged_label[nc], f"Merged Labels — no canopy (z ≤ {CANOPY_Z_MAX}m)"),
+        (ensemble[nc],     f"v8 Retrained Ensemble — no canopy (z ≤ {CANOPY_Z_MAX}m)"),
     ]):
+        xs, ys = x[nc], y[nc]
         for lv in [2,0,1]:
             m = arr==lv
             if not m.any(): continue
-            ax.scatter(x[m],y[m],c=cm[lv],s=0.4,alpha=0.6,
+            ax.scatter(xs[m],ys[m],c=cm[lv],s=0.4,alpha=0.6,
                        label=f"{lm[lv]} ({m.sum():,})",rasterized=True)
         # Tight footprint boundary (filled so over-extension into land is visible)
         _plot_poly(ax, footprint_poly, color="k", lw=1.5, label="Tight footprint",
@@ -747,11 +762,19 @@ def export_and_plot(feat_df, in_footprint, local_surface_z, merged_label,
         # Raw hull (before erosion)
         _plot_poly(ax, raw_hull, color="grey", lw=0.8, linestyle="--",
                    label="Raw hull (pre-erosion)", zorder=5)
+        # River boundary contours from mean probability field
+        _draw_contours(ax, rb_contours)
         ax.set_aspect("equal"); ax.set_xlabel("x (m)"); ax.set_ylabel("y (m)")
-        ax.set_title(title); ax.legend(markerscale=6,fontsize=8)
-    plt.suptitle("v8 Adaptive Surface Model — Top-down view\n"
-                 "(tight footprint from high-conf riverbed points, "
-                 "no absolute z in any model feature)",fontsize=11)
+        ax.set_title(title)
+        handles, labels_leg = ax.get_legend_handles_labels()
+        by_label = dict(zip(labels_leg, handles))
+        ax.legend(by_label.values(), by_label.keys(), markerscale=6, fontsize=7)
+    plt.suptitle(
+        f"v8 Adaptive Surface Model — Top-down view\n"
+        f"River boundary: inner p={PROB_INNER} (white) · "
+        f"center p={PROB_CENTER} (yellow) · outer p={PROB_OUTER} (orange)",
+        fontsize=11,
+    )
     plt.tight_layout()
     p1=os.path.join(out_dir,"topdown_scatter.png")
     plt.savefig(p1,dpi=150); plt.close()
