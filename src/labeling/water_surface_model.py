@@ -67,10 +67,13 @@ MODEL_DIR  = ROOT / "models"         / "current"
 OUT_PATH   = ROOT / "pointclouds"    / "labeled_pointcloud_current.csv"
 
 # ── Footprint parameters ───────────────────────────────────────────────────────
-FOOTPRINT_CONF    = 0.8    # minimum mean(xgb_proba, deep_proba) for anchor
-RIVERBED_Z_MAX    = 259.6  # z < this = underwater / riverbed (v6 zone boundary)
-HULL_RATIO        = 0.2    # concave_hull tightness  (lower = tighter)
-FOOTPRINT_EROSION = 0.5    # erode inward by this many metres (conservative)
+FOOTPRINT_CONF         = 0.8    # minimum mean(xgb_proba, deep_proba) for tier-1 anchor
+FOOTPRINT_CONF_SURFACE = 0.85   # higher threshold for tier-2 surface anchors
+RIVERBED_Z_MAX         = 259.6  # z < this = underwater / riverbed (v6 zone boundary)
+RIVERBED_Z_SURFACE_MAX = 261.5  # z < this for tier-2 surface water anchors
+HULL_RATIO             = 0.2    # concave_hull tightness  (lower = tighter)
+FOOTPRINT_EROSION      = 0.5    # erode inward by this many metres (conservative)
+TIER2_MAX_DIST_FROM_T1 = 10.0   # max metres a tier-2 anchor may be from any tier-1 anchor
 
 # ── Local surface grid ─────────────────────────────────────────────────────────
 CELL_SIZE         = 2.0    # metres per grid cell
@@ -114,19 +117,49 @@ ALL_FEATURES = WAVEFORM_FEATURES + RELATIVE_FEATURES
 
 def build_tight_footprint(feat_df, v6_df):
     """
-    Concave hull of high-confidence riverbed detections, eroded inward.
+    Concave hull of high-confidence water detections, eroded inward.
 
-    Anchor selection: ensemble=1, mean_conf ≥ FOOTPRINT_CONF, z < RIVERBED_Z_MAX
-    → these are the most certain laser-hit-the-bottom points, giving the
-    tightest possible river-channel boundary.
+    Two-tier anchor selection:
+      Tier 1: ensemble=1, conf ≥ FOOTPRINT_CONF, z < RIVERBED_Z_MAX
+              → certain laser-hit-the-bottom points (deepest, most reliable)
+      Tier 2: ensemble=1, conf ≥ FOOTPRINT_CONF_SURFACE, z < RIVERBED_Z_SURFACE_MAX
+              → water-surface returns in shallow/bend sections where the laser
+              does not reach the riverbed (covers river turns missed by tier-1)
     """
     mc     = (v6_df["xgb_proba"].values + v6_df["deep_proba"].values) * 0.5
-    anchor = ((v6_df["ensemble"].values == 1)
-              & (mc >= FOOTPRINT_CONF)
-              & (feat_df["z"].values < RIVERBED_Z_MAX))
+    z      = feat_df["z"].values
+    ens    = v6_df["ensemble"].values
+
+    tier1  = (ens == 1) & (mc >= FOOTPRINT_CONF) & (z < RIVERBED_Z_MAX)
+    tier2  = (ens == 1) & (mc >= FOOTPRINT_CONF_SURFACE) & (z < RIVERBED_Z_SURFACE_MAX)
+
+    # Proximity filter: only keep tier-2 anchors within TIER2_MAX_DIST_FROM_T1 metres
+    # of a tier-1 (riverbed) anchor.  This prevents surface water-like returns in
+    # non-river areas (wet meadows, puddles) from spiking the concave hull.
+    tier2_only = tier2 & ~tier1
+    n_t2_raw = int(tier2_only.sum())
+    if tier1.sum() > 0 and n_t2_raw > 0:
+        xy1 = np.column_stack([feat_df["x"].values[tier1], feat_df["y"].values[tier1]])
+        xy2 = np.column_stack([feat_df["x"].values[tier2_only], feat_df["y"].values[tier2_only]])
+        tree1 = KDTree(xy1)
+        dists, _ = tree1.query(xy2)
+        near = dists <= TIER2_MAX_DIST_FROM_T1
+        t2_idx = np.where(tier2_only)[0]
+        filtered_tier2 = np.zeros(len(feat_df), dtype=bool)
+        filtered_tier2[t2_idx[near]] = True
+        n_removed = int((~near).sum())
+        print(f"  Tier-2 proximity filter: kept {int(near.sum()):,} / {n_t2_raw:,} "
+              f"(removed {n_removed} isolated surface anchors >{TIER2_MAX_DIST_FROM_T1}m from tier-1)")
+        anchor = tier1 | filtered_tier2
+    else:
+        anchor = tier1 | tier2_only
+
     n_anchor = int(anchor.sum())
-    print(f"  Riverbed anchors (conf≥{FOOTPRINT_CONF}, z<{RIVERBED_Z_MAX}m): "
-          f"{n_anchor:,}")
+    print(f"  Tier-1 riverbed anchors (conf≥{FOOTPRINT_CONF}, z<{RIVERBED_Z_MAX}m): "
+          f"{int(tier1.sum()):,}")
+    print(f"  Tier-2 surface  anchors (conf≥{FOOTPRINT_CONF_SURFACE}, z<{RIVERBED_Z_SURFACE_MAX}m): "
+          f"{int((anchor & ~tier1).sum()):,}  (after proximity filter)")
+    print(f"  Total anchors: {n_anchor:,}")
 
     xw = feat_df["x"].values[anchor]
     yw = feat_df["y"].values[anchor]
@@ -134,9 +167,13 @@ def build_tight_footprint(feat_df, v6_df):
     mp        = MultiPoint(np.column_stack([xw, yw]))
     raw_hull  = concave_hull(mp, ratio=HULL_RATIO)
 
-    # Take largest polygon if MultiPolygon
+    # If MultiPolygon (river bend can create disconnected islands), keep ALL parts
+    # so the bend is not silently discarded.
     if isinstance(raw_hull, MultiPolygon):
-        raw_hull = max(raw_hull.geoms, key=lambda g: g.area)
+        n_parts = len(raw_hull.geoms)
+        print(f"  WARNING: concave hull produced {n_parts} polygons — keeping all parts")
+        # union preserves the full geometry as a (possibly MultiPolygon) shape
+        raw_hull = raw_hull.buffer(0)   # repairs topology; keeps all geoms
 
     footprint = raw_hull.buffer(-FOOTPRINT_EROSION)
     if footprint.is_empty:
@@ -149,9 +186,9 @@ def build_tight_footprint(feat_df, v6_df):
     print(f"  Concave hull area      : {raw_hull.area:,.0f} m²")
     print(f"  Tight footprint (−{FOOTPRINT_EROSION}m): {footprint.area:,.0f} m²")
 
-    # Return anchor xy so the surface grid can use it as a proximity guard
-    tier1_xy = np.column_stack([feat_df["x"].values[anchor],
-                                 feat_df["y"].values[anchor]])
+    # Return tier-1 xy so the surface grid can use it as a proximity guard
+    tier1_xy = np.column_stack([feat_df["x"].values[tier1],
+                                 feat_df["y"].values[tier1]])
     return footprint, raw_hull, tier1_xy
 
 
