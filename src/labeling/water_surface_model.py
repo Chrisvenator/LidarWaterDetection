@@ -30,6 +30,7 @@ Merged label values:
   2 = uncertain (margin cases; outside footprint when waveform says water)
 """
 
+import argparse
 import json
 import os
 import sys
@@ -43,7 +44,7 @@ import pandas as pd
 import xgboost as xgb
 import torch
 import torch.nn as nn
-from scipy.ndimage import gaussian_filter
+from scipy.ndimage import binary_dilation, gaussian_filter
 from scipy.interpolate import griddata
 from scipy.spatial import KDTree
 from shapely import concave_hull, MultiPoint, contains_xy
@@ -92,6 +93,15 @@ WATER_TOL = 0.30   # inside footprint, z ≤ surface + this → WATER
 
 # ── RANSAC (global fallback plane) ────────────────────────────────────────────
 RANSAC_RESIDUAL   = 0.20
+
+# ── Waterbed reconstruction (Phase 3b) ────────────────────────────────────────
+BED_MIN_PTS       = 3     # min confirmed-bed points per cell for primary estimate
+BED_MAX_DIST      = 6.0   # metres: max dist from confirmed bed data → qualify for recon
+BED_MARGIN        = 0.5   # z headroom below reconstructed bed (sensor noise / roughness)
+RECON_LABEL       = 3     # label value: reconstructed water (tree-over-water recovery)
+RECON_REFL_MAX    = -15.0 # reflectance ceiling: water << gravel at 532 nm green laser
+RECON_MIN_PEAKS   = 3     # n_peaks floor: only recover waveform-confused points
+                          # (simple waveforms at water z = gravel bar, not tree problem)
 
 # ── Feature sets ──────────────────────────────────────────────────────────────
 WAVEFORM_FEATURES = [
@@ -320,6 +330,141 @@ def build_surface_grid(feat_df, v6_df, tier1_xy=None):
     print(f"  Smoothing (σ={SMOOTH_SIGMA} cell): max Δz = {diff.max():.4f} m")
 
     return grid_z_smooth, x_min, y_min, n_x, n_y, xi, yi, plane_coef
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PHASE 3b — WATERBED RECONSTRUCTION
+# ══════════════════════════════════════════════════════════════════════════════
+
+def build_riverbed_grid(feat_df, merged_label, x_min, y_min, n_x, n_y, xi, yi):
+    """
+    Reconstruct riverbed elevation from confirmed deep-water returns.
+
+    Anchors: merged_label==1 AND z < RIVERBED_Z_MAX (laser reached the bottom).
+    Per 2m cell: 5th-percentile z — the deepest confirmed return = actual riverbed.
+
+    Physics: green 532 nm laser penetrates water.  The sub-surface return time
+    satisfies  depth [m] = Δt [s] × c / (2 · n_water)  where n_water ≈ 1.333.
+    These are the points with the *smallest* z inside each grid cell.
+
+    Gaps (sections where laser absorption prevented bed penetration) are filled
+    with nearest-neighbour griddata so no cell is left undefined.  A boolean
+    coverage mask records where primary data actually exists.
+
+    Returns
+    -------
+    bed_grid     : (n_y, n_x) float32 — smoothed riverbed elevation
+    bed_coverage : (n_y, n_x) bool    — True where primary data exists
+    """
+    z        = feat_df["z"].values
+    bed_mask = (merged_label == 1) & (z < RIVERBED_Z_MAX)
+    n_bed    = int(bed_mask.sum())
+    print(f"  Riverbed anchors (label=1, z<{RIVERBED_Z_MAX}m): {n_bed:,}")
+
+    bed_coverage = np.zeros((n_y, n_x), dtype=bool)
+    if n_bed == 0:
+        print("  WARNING: no riverbed anchors — skipping waterbed reconstruction")
+        return np.zeros((n_y, n_x), dtype=np.float32), bed_coverage
+
+    flat_ids    = yi[bed_mask] * n_x + xi[bed_mask]
+    df_bed      = pd.DataFrame({"flat": flat_ids, "z": z[bed_mask]})
+    counts      = df_bed.groupby("flat")["z"].count()
+    valid       = counts[counts >= BED_MIN_PTS].index
+    bed_primary = (df_bed[df_bed["flat"].isin(valid)]
+                   .groupby("flat")["z"].quantile(0.05))
+    print(f"  Cells with ≥{BED_MIN_PTS} bed anchors: {len(bed_primary)} / {n_x*n_y}")
+
+    bed_grid = np.full((n_y, n_x), np.nan, dtype=np.float32)
+    for flat_idx, bz in bed_primary.items():
+        iy = int(flat_idx) // n_x
+        ix = int(flat_idx) %  n_x
+        if 0 <= iy < n_y and 0 <= ix < n_x:
+            bed_grid[iy, ix] = float(bz)
+            bed_coverage[iy, ix] = True
+
+    # Nearest-neighbour fill — never produces NaN at grid edges
+    known_y, known_x = np.where(bed_coverage)
+    if len(known_y) > 0:
+        all_y, all_x = np.mgrid[0:n_y, 0:n_x]
+        filled = griddata(
+            np.column_stack([known_y, known_x]),
+            bed_grid[known_y, known_x],
+            np.column_stack([all_y.ravel(), all_x.ravel()]),
+            method="nearest",
+        ).reshape(n_y, n_x).astype(np.float32)
+        bed_grid = np.where(np.isnan(bed_grid), filled, bed_grid)
+
+    bed_grid = gaussian_filter(bed_grid, sigma=SMOOTH_SIGMA).astype(np.float32)
+    print(f"  Riverbed grid: {int(bed_coverage.sum())} data cells, "
+          f"{n_x * n_y - int(bed_coverage.sum())} interpolated/extrapolated")
+    return bed_grid, bed_coverage
+
+
+def apply_waterbed_reconstruction(feat_df, merged_label, local_surface_z,
+                                   bed_grid, bed_coverage, xi, yi):
+    """
+    Flag missed water points as RECON_LABEL (3): tree-over-water recovery.
+
+    Problem: a tree hanging over the river adds canopy returns to the waveform,
+    driving n_peaks high.  The waveform classifier labels these points as
+    land/uncertain; the footprint may also have a gap in that section.
+    Result: confirmed-water geometry (z ≤ water surface) goes unlabelled.
+
+    Fix: if confirmed riverbed data exists nearby (within BED_MAX_DIST m),
+    the river IS there.  Any non-water point whose z sits inside the water
+    corridor  [local_bed − BED_MARGIN, local_surface + WATER_TOL]  is
+    flagged as reconstructed water.
+
+    "No waterbed" areas (laser absorbed before reaching bottom) simply have
+    no coverage cells → near_bed = False → no false positives there.
+
+    Gravel-bank false-positive guard (two physics criteria):
+      - reflectance_dB < RECON_REFL_MAX: water absorbs 532 nm green much more
+        than dry or wet gravel → low reflectance = water-like surface
+      - n_peaks >= RECON_MIN_PEAKS: the tree-over-water problem specifically
+        produces complex waveforms (tree + water + possibly bed peaks).
+        Points with n_peaks ≤ 2 have simple waveforms; they were NOT confused
+        by tree returns and should have been caught by Phase 3 already.
+
+    Returns
+    -------
+    reconstructed_label : (N,) int8 — copy of merged_label with RECON_LABEL entries
+    """
+    z            = feat_df["z"].values
+    reflectance  = feat_df["reflectance_dB"].values
+    n_peaks      = feat_df["n_peaks"].values
+
+    # Dilate coverage: accept points within BED_MAX_DIST m of any data cell
+    struct_r    = max(1, int(np.ceil(BED_MAX_DIST / CELL_SIZE)))
+    struct      = np.ones((2 * struct_r + 1, 2 * struct_r + 1), dtype=bool)
+    near_bed_2d = binary_dilation(bed_coverage, structure=struct)
+    near_bed    = near_bed_2d[yi, xi]
+
+    local_bed     = bed_grid[yi, xi]
+    below_surface = z <= local_surface_z + WATER_TOL
+    above_bed     = z >= local_bed - BED_MARGIN
+    not_water     = merged_label != 1
+    water_like_refl = reflectance < RECON_REFL_MAX  # gravel is more reflective
+    waveform_confused = n_peaks >= RECON_MIN_PEAKS  # tree-over-water signature
+
+    reconstructed = (not_water & below_surface & near_bed & above_bed
+                     & water_like_refl & waveform_confused)
+
+    new_labels = merged_label.copy()
+    new_labels[reconstructed] = RECON_LABEL
+
+    n_recon = int(reconstructed.sum())
+    print(f"\n  Waterbed-guided reconstruction: {n_recon:,} new water points "
+          f"(label={RECON_LABEL})")
+    print(f"    Criteria: near_bed={int(near_bed.sum()):,}  "
+          f"below_surface={int(below_surface.sum()):,}  "
+          f"water_refl={int(water_like_refl.sum()):,}  "
+          f"complex_wf={int(waveform_confused.sum()):,}")
+    for old_lv, nm in [(0, "land"), (2, "uncertain")]:
+        n = int((reconstructed & (merged_label == old_lv)).sum())
+        print(f"    From {nm}: {n:,}")
+
+    return new_labels
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -664,7 +809,8 @@ def train_deep(feat_df, grids_all, merged_labels, out_dir,
 
 def export_and_plot(feat_df, in_footprint, local_surface_z, merged_label,
                     xgb_proba, deep_proba, grid_z, x_min, y_min, n_x, n_y,
-                    footprint_poly, raw_hull, plane_coef, out_dir):
+                    footprint_poly, raw_hull, plane_coef, out_dir,
+                    reconstructed_label=None):
     N = len(feat_df)
     x = feat_df["x"].values; y = feat_df["y"].values; z = feat_df["z"].values
 
@@ -685,6 +831,8 @@ def export_and_plot(feat_df, in_footprint, local_surface_z, merged_label,
         print(f"    Ensemble {lv} ({nm}): {n:,}  ({100*n/N:.1f}%)")
 
     # ── CSV ────────────────────────────────────────────────────────────────────
+    _recon = (reconstructed_label if reconstructed_label is not None
+              else merged_label.copy())
     out = pd.DataFrame({
         "x":x,"y":y,"z":z,
         "reflectance_dB": feat_df["reflectance_dB"].values
@@ -693,6 +841,7 @@ def export_and_plot(feat_df, in_footprint, local_surface_z, merged_label,
         "local_surface_z": np.round(local_surface_z,4),
         "z_above_surface": np.round(z-local_surface_z,4),
         "merged_label":   merged_label,
+        "reconstructed_label": _recon,   # 0=land 1=water 2=uncertain 3=recon-water
         "xgb_pred":       xgb_pred, "xgb_proba":  np.round(xgb_proba,4),
         "deep_pred":      deep_pred, "deep_proba": np.round(deep_proba,4),
         "ensemble":       ensemble,
@@ -848,7 +997,70 @@ def export_and_plot(feat_df, in_footprint, local_surface_z, merged_label,
 # MAIN
 # ══════════════════════════════════════════════════════════════════════════════
 
+def apply_xgb(feat_df: pd.DataFrame, model_dir: Path):
+    """Load existing v8_xgb.json and predict probas on all points."""
+    cols  = [c for c in ALL_FEATURES if c in feat_df.columns]
+    vals  = np.nan_to_num(feat_df[cols].values.astype(np.float32),
+                          nan=0.0, posinf=0.0, neginf=0.0)
+    clf   = xgb.XGBClassifier()
+    mpath = os.path.join(model_dir, "v8_xgb.json")
+    clf.load_model(mpath)
+    print(f"  Loaded XGBoost from {mpath}")
+    xgb_proba_all = clf.predict_proba(vals)[:, 1]
+    cv_res = {"macro_f1_mean": None, "macro_f1_std": None,
+              "n_water": -1, "n_land": -1, "feature_cols": cols}
+    return clf, cv_res, xgb_proba_all
+
+
+@torch.no_grad()
+def apply_deep(feat_df: pd.DataFrame, grids_all: np.ndarray,
+               model_dir: Path):
+    """Load existing v8_deep.pt + stats and predict probas on all points."""
+    stats_path = os.path.join(model_dir, "v8_deep_stats.json")
+    mpath      = os.path.join(model_dir, "v8_deep.pt")
+    with open(stats_path) as fh:
+        stats = json.load(fh)
+
+    cols    = stats["spatial_cols"]
+    g_mean  = float(stats["grid_mean"])
+    g_std   = float(stats["grid_std"])
+    sp_mean = np.array(stats["spatial_mean"], np.float32)
+    sp_std  = np.array(stats["spatial_std"],  np.float32)
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model  = V8Net(n_spatial=len(cols)).to(device)
+    model.load_state_dict(torch.load(mpath, map_location=device, weights_only=True))
+    model.eval()
+    print(f"  Loaded V8Net from {mpath}  (device={device})")
+
+    N      = len(feat_df)
+    sp_all = np.nan_to_num(feat_df[cols].values.astype(np.float32),
+                           nan=0.0, posinf=0.0, neginf=0.0)
+    sn_all = (sp_all - sp_mean) / sp_std
+    gf     = np.nan_to_num(np.array(grids_all, dtype=np.float32),
+                           nan=0.0, posinf=0.0, neginf=0.0)
+    gn_all = (gf - g_mean) / g_std
+
+    probas = np.zeros(N, np.float32)
+    bs     = 2048
+    for s in range(0, N, bs):
+        e   = min(s + bs, N)
+        wfb = torch.from_numpy(gn_all[s:e]).unsqueeze(1).to(device)
+        spb = torch.from_numpy(sn_all[s:e]).to(device)
+        probas[s:e] = torch.softmax(model(wfb, spb), 1)[:, 1].cpu().numpy()
+        if s % 50_000 == 0 and s > 0:
+            print(f"    {s:>6,}/{N:,}")
+
+    cv_res = {"best_val_f1": None}
+    return model, stats, cv_res, probas
+
+
 def main():
+    p = argparse.ArgumentParser(description="Water surface model v8")
+    p.add_argument("--no-train", action="store_true",
+                   help="Skip phases 4a/4b — load existing v8 models and run inference only")
+    args = p.parse_args()
+
     os.makedirs(MODEL_DIR, exist_ok=True)
 
     print(f"Loading {V6_WF_CSV} …")
@@ -898,18 +1110,37 @@ def main():
     merged_label = classify(feat_df, v6_df, in_footprint,
                              local_surface_z, wf_ensemble)
 
+    # ── Phase 3b ───────────────────────────────────────────────────────────────
+    print(f"\n{'='*60}")
+    print("PHASE 3b — WATERBED RECONSTRUCTION")
+    print(f"{'='*60}")
+    bed_grid, bed_coverage = build_riverbed_grid(
+        feat_df, merged_label, x_min, y_min, n_x, n_y, xi, yi)
+    reconstructed_label = apply_waterbed_reconstruction(
+        feat_df, merged_label, local_surface_z, bed_grid, bed_coverage, xi, yi)
+
     # ── Phase 4a ───────────────────────────────────────────────────────────────
     print(f"\n{'='*60}")
-    print("PHASE 4a — RETRAIN XGBOOST")
-    print(f"{'='*60}")
-    _, xgb_cv, xgb_proba_all = train_xgb(feat_df, merged_label, MODEL_DIR)
+    if args.no_train:
+        print("PHASE 4a — APPLY EXISTING XGBOOST (--no-train)")
+        print(f"{'='*60}")
+        _, xgb_cv, xgb_proba_all = apply_xgb(feat_df, MODEL_DIR)
+    else:
+        print("PHASE 4a — RETRAIN XGBOOST")
+        print(f"{'='*60}")
+        _, xgb_cv, xgb_proba_all = train_xgb(feat_df, merged_label, MODEL_DIR)
 
     # ── Phase 4b ───────────────────────────────────────────────────────────────
     print(f"\n{'='*60}")
-    print("PHASE 4b — RETRAIN V8Net")
-    print(f"{'='*60}")
-    _, _, deep_cv, deep_proba_all = train_deep(
-        feat_df, grids_all, merged_label, MODEL_DIR)
+    if args.no_train:
+        print("PHASE 4b — APPLY EXISTING V8Net (--no-train)")
+        print(f"{'='*60}")
+        _, _, deep_cv, deep_proba_all = apply_deep(feat_df, grids_all, MODEL_DIR)
+    else:
+        print("PHASE 4b — RETRAIN V8Net")
+        print(f"{'='*60}")
+        _, _, deep_cv, deep_proba_all = train_deep(
+            feat_df, grids_all, merged_label, MODEL_DIR)
 
     # ── Phase 5 ────────────────────────────────────────────────────────────────
     print(f"\n{'='*60}")
@@ -919,7 +1150,8 @@ def main():
         feat_df, in_footprint, local_surface_z, merged_label,
         xgb_proba_all, deep_proba_all,
         grid_z, x_min, y_min, n_x, n_y,
-        footprint_poly, raw_hull, plane_coef, MODEL_DIR)
+        footprint_poly, raw_hull, plane_coef, MODEL_DIR,
+        reconstructed_label=reconstructed_label)
 
     metrics = {
         "footprint": {
@@ -964,9 +1196,13 @@ def main():
           f"({100*(merged_label==1).mean():.1f}%)")
     print(f"  Merged land       : {int((merged_label==0).sum()):,}")
     print(f"  Merged uncertain  : {int((merged_label==2).sum()):,}")
-    print(f"  XGBoost CV F1     : {xgb_cv['macro_f1_mean']:.3f} "
-          f"± {xgb_cv['macro_f1_std']:.3f}")
-    print(f"  Deep best val F1  : {deep_cv['best_val_f1']:.3f}")
+    xgb_f1 = xgb_cv["macro_f1_mean"]
+    deep_f1 = deep_cv["best_val_f1"]
+    xgb_f1_str  = (f"{xgb_f1:.3f} ± {xgb_cv['macro_f1_std']:.3f}"
+                   if xgb_f1 is not None else "n/a (--no-train)")
+    deep_f1_str = f"{deep_f1:.3f}" if deep_f1 is not None else "n/a (--no-train)"
+    print(f"  XGBoost CV F1     : {xgb_f1_str}")
+    print(f"  Deep best val F1  : {deep_f1_str}")
     print(f"\n  Output: {OUT_PATH}")
     print(f"  Models: {MODEL_DIR}")
     print(f"\n  CloudCompare — colour by 'ensemble': "

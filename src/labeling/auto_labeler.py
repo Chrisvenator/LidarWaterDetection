@@ -37,6 +37,7 @@ Outputs:
   pointclouds/labeled_pointcloud_v5_waveform_only.csv
 """
 
+import argparse
 import json
 import os
 from pathlib import Path
@@ -643,6 +644,11 @@ def deep_infer_all(feat_df, grids_all, stats, model_path, batch_size=2048):
 # ══════════════════════════════════════════════════════════════════════════════
 
 def main():
+    p = argparse.ArgumentParser(description="Auto-labeler v6 — waveform-only classifier")
+    p.add_argument("--no-train", action="store_true",
+                   help="Skip training — load existing v6 models and run inference only")
+    args = p.parse_args()
+
     os.makedirs(MODEL_DIR, exist_ok=True)
     os.makedirs(PC_OUT.parent, exist_ok=True)
 
@@ -694,26 +700,45 @@ def main():
     print(f"\nLabels → {LABEL_OUT}")
 
     # ── PHASE 2: Diagnostic ────────────────────────────────────────────────────
-    ds_sorted = run_diagnostic(feat_df, grids_all, z, MODEL_DIR)
+    if args.no_train:
+        print("\nSkipping Phase 2 diagnostics (--no-train).")
+        ds_sorted = []
+    else:
+        ds_sorted = run_diagnostic(feat_df, grids_all, z, MODEL_DIR)
 
     # ── PHASE 3: Training ──────────────────────────────────────────────────────
     print(f"\n{'='*60}")
-    print("PHASE 3 — TRAINING (waveform + reflectance features only)")
-    print(f"{'='*60}")
+    if args.no_train:
+        print("PHASE 3 — LOAD EXISTING V6 MODELS (--no-train)")
+        print(f"{'='*60}")
+        stats_path = os.path.join(MODEL_DIR, "v6_deep_stats.json")
+        with open(stats_path) as fh:
+            deep_stats = json.load(fh)
+        xgb_cols = deep_stats["spatial_cols"]
+        xgb_cv   = {"macro_f1_mean": None, "macro_f1_std": None,
+                    "auc_mean": None, "prec_water": None, "rec_water": None,
+                    "prec_land": None, "rec_land": None}
+        deep_cv  = {"best_val_f1": None}
+        df_train = feat_df[label != -1]  # for summary count only
+        print(f"  Loaded stats from {stats_path}")
+        print(f"  XGBoost: {os.path.join(MODEL_DIR, 'v6_xgb.json')}")
+        print(f"  Deep   : {os.path.join(MODEL_DIR, 'v6_deep.pt')}")
+    else:
+        print("PHASE 3 — TRAINING (waveform + reflectance features only)")
+        print(f"{'='*60}")
+        train_mask = label != -1
+        df_train   = feat_df[train_mask].copy()
+        df_train["label"] = label[train_mask]
+        df_train["y"]     = feat_df["y"].values[train_mask]
+        train_orig_rows   = np.where(train_mask)[0]
 
-    train_mask = label != -1
-    df_train   = feat_df[train_mask].copy()
-    df_train["label"] = label[train_mask]
-    df_train["y"]     = feat_df["y"].values[train_mask]
-    train_orig_rows   = np.where(train_mask)[0]
+        print(f"\nTraining set: {len(df_train):,} points  "
+              f"(water={n_w:,}  land={n_l:,})")
 
-    print(f"\nTraining set: {len(df_train):,} points  "
-          f"(water={n_w:,}  land={n_l:,})")
+        xgb_model, xgb_cols, xgb_cv = train_xgb(df_train, MODEL_DIR)
 
-    xgb_model, xgb_cols, xgb_cv = train_xgb(df_train, MODEL_DIR)
-
-    deep_model, deep_stats, deep_cv = train_deep(
-        df_train, grids_all, train_orig_rows, MODEL_DIR)
+        deep_model, deep_stats, deep_cv = train_deep(
+            df_train, grids_all, train_orig_rows, MODEL_DIR)
 
     # ── PHASE 4: Inference on all 234k points ─────────────────────────────────
     print(f"\n{'='*60}")
@@ -823,25 +848,27 @@ def main():
     print(f"\n  Training labels: {len(df_train):,}  "
           f"water={n_w:,}  land={n_l:,}  excluded={n_unk:,}")
 
+    def _fmt(v, spec=":.3f"): return format(v, spec[1:]) if v is not None else "n/a"
+
     print(f"\n  XGBoost (waveform-only) — 5-fold spatial CV:")
-    print(f"    macro-F1 : {xgb_cv['macro_f1_mean']:.3f} ± {xgb_cv['macro_f1_std']:.3f}")
-    print(f"    ROC-AUC  : {xgb_cv['auc_mean']:.3f}")
-    print(f"    Water P={xgb_cv['prec_water']:.3f}  R={xgb_cv['rec_water']:.3f}")
-    print(f"    Land  P={xgb_cv['prec_land']:.3f}  R={xgb_cv['rec_land']:.3f}")
+    print(f"    macro-F1 : {_fmt(xgb_cv['macro_f1_mean'])} ± {_fmt(xgb_cv['macro_f1_std'])}")
+    print(f"    ROC-AUC  : {_fmt(xgb_cv['auc_mean'])}")
+    print(f"    Water P={_fmt(xgb_cv['prec_water'])}  R={_fmt(xgb_cv['rec_water'])}")
+    print(f"    Land  P={_fmt(xgb_cv['prec_land'])}  R={_fmt(xgb_cv['rec_land'])}")
 
     print(f"\n  Deep V6Net (waveform-only):")
-    print(f"    Best val macro-F1: {deep_cv['best_val_f1']:.3f}")
+    print(f"    Best val macro-F1: {_fmt(deep_cv['best_val_f1'])}")
 
     print(f"\n  Ensemble on all {N:,} points:")
     print(f"    Water (1)     : {int((ensemble==1).sum()):>7,}")
     print(f"    Land  (0)     : {int((ensemble==0).sum()):>7,}")
     print(f"    Uncertain (2) : {int((ensemble==2).sum()):>7,}")
 
-    # Top diagnostic features
-    print(f"\n  Top 5 separating features (Cohen's d, water_surface vs dry_riverbed):")
-    for name, d, ws_m, db_m in ds_sorted[:5]:
-        print(f"    {name:<35} d={d:+.3f}  "
-              f"WS={ws_m:.3f}  DB={db_m:.3f}")
+    if ds_sorted:
+        print(f"\n  Top 5 separating features (Cohen's d, water_surface vs dry_riverbed):")
+        for name, d, ws_m, db_m in ds_sorted[:5]:
+            print(f"    {name:<35} d={d:+.3f}  "
+                  f"WS={ws_m:.3f}  DB={db_m:.3f}")
 
     metrics = {
         "labeling": {
@@ -860,7 +887,7 @@ def main():
                 {"name": n, "cohens_d": float(d),
                  "water_surf_mean": float(wm), "dry_bed_mean": float(dm)}
                 for n, d, wm, dm in ds_sorted[:5]
-            ],
+            ] if ds_sorted else [],
             "large_effect_count": int(sum(1 for _, d, _, _ in ds_sorted if abs(d) >= 0.8)),
         },
         "xgb_cv": xgb_cv,

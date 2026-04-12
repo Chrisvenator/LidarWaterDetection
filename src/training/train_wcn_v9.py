@@ -30,6 +30,7 @@ models/wcn_v9/
 pointclouds/labeled_pointcloud_wcn.csv
 """
 
+import argparse
 import json
 import math
 import os
@@ -1019,19 +1020,42 @@ def export_results(
 # MAIN
 # ══════════════════════════════════════════════════════════════════════════════
 
+def _load_labels_for_inference(N: int) -> np.ndarray:
+    """Load or bootstrap labels for export. Tries labeled_pointcloud_wcn.csv first,
+    falls back to labeled_pointcloud_current.csv (bootstrapping stage 6 inline)."""
+    pc_cur = ROOT / "pointclouds" / "labeled_pointcloud_current.csv"
+    if LABELS_PATH.exists():
+        lab_df = pd.read_csv(LABELS_PATH, usecols=["ensemble"])
+        assert len(lab_df) == N
+        return lab_df["ensemble"].values.astype(np.int8)
+    if pc_cur.exists():
+        print(f"  labeled_pointcloud_wcn.csv not found — bootstrapping from {pc_cur.name}")
+        df = pd.read_csv(pc_cur, usecols=["merged_label"])
+        assert len(df) == N
+        return df["merged_label"].values.astype(np.int8)
+    raise FileNotFoundError(
+        f"No label source found. Run water_surface_model.py first.")
+
+
 def main():
+    p = argparse.ArgumentParser(description="WCN v9 training / inference")
+    p.add_argument("--no-train", action="store_true",
+                   help="Skip all training — load wcn_refined.pt + wcn_xgb.json and run inference only")
+    args = p.parse_args()
+
     os.makedirs(MODEL_DIR, exist_ok=True)
     random.seed(42); np.random.seed(42); torch.manual_seed(42)
 
-    print("=" * 60)
-    print(f"WCN v9 Training  |  device={DEVICE}")
-    print("=" * 60)
-
-    # ── Load data ─────────────────────────────────────────────────────────────
-    for p in [GRIDS_PATH, FEAT_PATH, LABELS_PATH]:
+    # ── Load data (always needed) ─────────────────────────────────────────────
+    for p in [GRIDS_PATH, FEAT_PATH]:
         if not p.exists():
             raise FileNotFoundError(
                 f"{p}\nRun `python src/training/preprocess_wcn.py` first.")
+
+    print("=" * 60)
+    mode = "INFERENCE (--no-train)" if args.no_train else f"TRAINING  |  device={DEVICE}"
+    print(f"WCN v9 {mode}")
+    print("=" * 60)
 
     print(f"\nLoading waveform grids …")
     wf_norm = np.load(GRIDS_PATH, mmap_mode="r")   # (N, 200) float32
@@ -1044,7 +1068,49 @@ def main():
     scalars_raw = feat_df[SCALAR_FEATURES].values.astype(np.float32)
     print(f"  {N:,} × {N_SCALAR} features")
 
-    print(f"Loading labels …")
+    if args.no_train:
+        # ── Inference-only path ───────────────────────────────────────────────
+        stats_path = MODEL_DIR / "wcn_stats.json"
+        if not stats_path.exists():
+            raise FileNotFoundError(f"{stats_path} not found — run training first.")
+        with open(stats_path) as fh:
+            saved = json.load(fh)
+        scalars_norm, _ = _normalise_scalars(scalars_raw,
+                                             stats=saved["scalar_stats"])
+
+        model = WCNv9(n_scalar=N_SCALAR).to(DEVICE)
+        refined_path = MODEL_DIR / "wcn_refined.pt"
+        model.load_state_dict(torch.load(refined_path, map_location=DEVICE,
+                                         weights_only=True))
+        model.eval()
+        print(f"  Loaded WCNv9 from {refined_path}  (device={DEVICE})")
+
+        xgb_m = xgb.XGBClassifier()
+        xgb_path = MODEL_DIR / "wcn_xgb.json"
+        xgb_m.load_model(xgb_path)
+        print(f"  Loaded XGBoost from {xgb_path}")
+
+        wcn_proba = run_full_inference(model, wf_norm, scalars_norm, DEVICE)
+        xgb_proba = xgb_m.predict_proba(scalars_norm)[:, 1].astype(np.float32)
+
+        labels = _load_labels_for_inference(N)
+        print(f"  Labels: land={int((labels==0).sum()):,}  "
+              f"water={int((labels==1).sum()):,}  "
+              f"uncertain={int((labels==2).sum()):,}")
+
+        export_results(feat_df, wcn_proba, xgb_proba, labels, MODEL_DIR)
+
+        print("\n" + "=" * 60)
+        print("WCN v9 inference complete (--no-train).")
+        print(f"  Output : {OUT_CSV}")
+        print("=" * 60)
+        return
+
+    # ── Training path (default) ───────────────────────────────────────────────
+    if not LABELS_PATH.exists():
+        raise FileNotFoundError(
+            f"{LABELS_PATH}\nRun stage 6 (bootstrap labels) first.")
+
     lab_df  = pd.read_csv(LABELS_PATH,
                           usecols=["ensemble", "wcn_proba", "xgb_proba"])
     assert len(lab_df) == N
@@ -1055,48 +1121,36 @@ def main():
     print(f"  land={int((labels==0).sum()):,}  water={int((labels==1).sum()):,}  "
           f"uncertain={int((labels==2).sum()):,}")
 
-    # ── Normalise scalars ────────────────────────────────────────────────────
     scalars_norm, scalar_stats = _normalise_scalars(scalars_raw)
-    # Auxiliary regression targets
     ec_idx = SCALAR_FEATURES.index("energy_concentration")
     dp_idx = SCALAR_FEATURES.index("depth_proxy_m")
-    aux_ec = scalars_raw[:, ec_idx]                   # raw (not normalised)
+    aux_ec = scalars_raw[:, ec_idx]
     aux_dp = scalars_raw[:, dp_idx]
 
-    # ── Build model ──────────────────────────────────────────────────────────
     model = WCNv9(n_scalar=N_SCALAR).to(DEVICE)
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"\nWCNv9 parameters: {n_params:,}")
 
-    # ── Phase 1 ──────────────────────────────────────────────────────────────
     phase1_pretrain(model, wf_norm, MODEL_DIR, DEVICE)
 
-    # ── Phase 2 ──────────────────────────────────────────────────────────────
     p2_metrics = phase2_finetune(
         model, wf_norm, scalars_norm, labels, weights,
         aux_ec, aux_dp, MODEL_DIR, DEVICE)
 
-    # ── XGBoost ──────────────────────────────────────────────────────────────
     xgb_model, xgb_proba, xgb_metrics = train_xgb(
         scalars_norm, labels, feat_df["y"].values, MODEL_DIR)
 
-    # ── Phase 3 ──────────────────────────────────────────────────────────────
     p3_metrics = phase3_refine(
         model, wf_norm, scalars_norm, labels, weights,
         aux_ec, aux_dp, MODEL_DIR, DEVICE)
 
-    # Use Phase 3 model if it exists, otherwise Phase 2
     refined_path = MODEL_DIR / "wcn_refined.pt"
     if refined_path.exists():
         model.load_state_dict(torch.load(refined_path, map_location=DEVICE))
 
-    # ── Full inference ────────────────────────────────────────────────────────
     wcn_proba = run_full_inference(model, wf_norm, scalars_norm, DEVICE)
-
-    # ── Export ────────────────────────────────────────────────────────────────
     export_results(feat_df, wcn_proba, xgb_proba, labels, MODEL_DIR)
 
-    # ── Save stats + metrics ──────────────────────────────────────────────────
     all_metrics = {
         "scalar_features": SCALAR_FEATURES,
         "n_scalar":        N_SCALAR,
