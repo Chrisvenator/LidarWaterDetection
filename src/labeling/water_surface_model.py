@@ -819,6 +819,16 @@ def export_and_plot(feat_df, in_footprint, local_surface_z, merged_label,
     agree     = xgb_pred == deep_pred
     ensemble  = xgb_pred.copy(); ensemble[~agree] = 2
 
+    # Geometry overrides ML inside the footprint where merged_label is confident.
+    # Without this, ML disagreement inside the footprint leaks into ensemble as
+    # "uncertain" or "land" even when surface geometry says water.
+    geo_confident = in_footprint & (merged_label != 2)
+    ensemble[geo_confident] = merged_label[geo_confident]
+
+    # Waterbed reconstruction always wins — geometry recovered these points explicitly.
+    if reconstructed_label is not None:
+        ensemble[reconstructed_label == 3] = 1
+
     print(f"\n  Retrained ensemble on all {N:,} points:")
     print(f"    XGBoost: water={int(xgb_pred.sum()):,}  "
           f"land={int((xgb_pred==0).sum()):,}")
@@ -826,6 +836,7 @@ def export_and_plot(feat_df, in_footprint, local_surface_z, merged_label,
           f"land={int((deep_pred==0).sum()):,}")
     print(f"    Agreement: {100*agree.mean():.1f}%  "
           f"({int((~agree).sum()):,} uncertain)")
+    print(f"    After geometry override + waterbed reconstruction:")
     for lv,nm in [(0,"land"),(1,"water"),(2,"uncertain")]:
         n=int((ensemble==lv).sum())
         print(f"    Ensemble {lv} ({nm}): {n:,}  ({100*n/N:.1f}%)")
