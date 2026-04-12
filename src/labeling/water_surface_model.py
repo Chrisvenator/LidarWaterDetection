@@ -810,7 +810,7 @@ def train_deep(feat_df, grids_all, merged_labels, out_dir,
 def export_and_plot(feat_df, in_footprint, local_surface_z, merged_label,
                     xgb_proba, deep_proba, grid_z, x_min, y_min, n_x, n_y,
                     footprint_poly, raw_hull, plane_coef, out_dir,
-                    reconstructed_label=None):
+                    reconstructed_label=None, out_path=None):
     N = len(feat_df)
     x = feat_df["x"].values; y = feat_df["y"].values; z = feat_df["z"].values
 
@@ -852,8 +852,9 @@ def export_and_plot(feat_df, in_footprint, local_surface_z, merged_label,
                 "z_relative","amplitude_weighted_center"]:
         if col in feat_df.columns:
             out[col] = feat_df[col].values
-    out.to_csv(OUT_PATH, index=False)
-    print(f"\n  Saved {N:,} rows → {OUT_PATH}")
+    dest = out_path or OUT_PATH
+    out.to_csv(dest, index=False)
+    print(f"\n  Saved {N:,} rows → {dest}")
 
     cm = {0:"saddlebrown", 1:"steelblue", 2:"gold"}
     lm = {0:"Land", 1:"Water", 2:"Uncertain"}
@@ -1059,12 +1060,27 @@ def main():
     p = argparse.ArgumentParser(description="Water surface model v8")
     p.add_argument("--no-train", action="store_true",
                    help="Skip phases 4a/4b — load existing v8 models and run inference only")
+    p.add_argument("--label-src", type=Path, default=None,
+                   help="Override label source CSV (default: labeled_pointcloud_waveform_only.csv). "
+                        "wcn_proba is auto-aliased to deep_proba if present.")
+    p.add_argument("--geometry-only", action="store_true",
+                   help="Skip phase 4 entirely — use label-src probabilities as ML output. "
+                        "Geometry (phases 1-3b) still runs using label-src as anchors.")
+    p.add_argument("--out", type=Path, default=None,
+                   help="Override output CSV path (default: labeled_pointcloud_current.csv)")
     args = p.parse_args()
 
+    label_src = args.label_src or V6_WF_CSV
+    out_path  = args.out or OUT_PATH
     os.makedirs(MODEL_DIR, exist_ok=True)
+    if args.out:
+        os.makedirs(args.out.parent, exist_ok=True)
 
-    print(f"Loading {V6_WF_CSV} …")
-    v6_df   = pd.read_csv(V6_WF_CSV)
+    print(f"Loading {label_src} …")
+    v6_df   = pd.read_csv(label_src)
+    # wcn_proba → deep_proba alias for v9 CSV compatibility
+    if "wcn_proba" in v6_df.columns and "deep_proba" not in v6_df.columns:
+        v6_df["deep_proba"] = v6_df["wcn_proba"]
     N       = len(v6_df)
     print(f"  {N:,} points")
 
@@ -1121,7 +1137,13 @@ def main():
 
     # ── Phase 4a ───────────────────────────────────────────────────────────────
     print(f"\n{'='*60}")
-    if args.no_train:
+    if args.geometry_only:
+        print("PHASE 4a — SKIPPED (--geometry-only: using label-src probabilities)")
+        print(f"{'='*60}")
+        xgb_proba_all = v6_df["xgb_proba"].values.astype(np.float32)
+        xgb_cv = {"macro_f1_mean": None, "macro_f1_std": None,
+                  "n_water": -1, "n_land": -1, "feature_cols": []}
+    elif args.no_train:
         print("PHASE 4a — APPLY EXISTING XGBOOST (--no-train)")
         print(f"{'='*60}")
         _, xgb_cv, xgb_proba_all = apply_xgb(feat_df, MODEL_DIR)
@@ -1132,7 +1154,12 @@ def main():
 
     # ── Phase 4b ───────────────────────────────────────────────────────────────
     print(f"\n{'='*60}")
-    if args.no_train:
+    if args.geometry_only:
+        print("PHASE 4b — SKIPPED (--geometry-only: using label-src probabilities)")
+        print(f"{'='*60}")
+        deep_proba_all = v6_df["deep_proba"].values.astype(np.float32)
+        deep_cv = {"best_val_f1": None}
+    elif args.no_train:
         print("PHASE 4b — APPLY EXISTING V8Net (--no-train)")
         print(f"{'='*60}")
         _, _, deep_cv, deep_proba_all = apply_deep(feat_df, grids_all, MODEL_DIR)
@@ -1151,7 +1178,8 @@ def main():
         xgb_proba_all, deep_proba_all,
         grid_z, x_min, y_min, n_x, n_y,
         footprint_poly, raw_hull, plane_coef, MODEL_DIR,
-        reconstructed_label=reconstructed_label)
+        reconstructed_label=reconstructed_label,
+        out_path=out_path)
 
     metrics = {
         "footprint": {
@@ -1203,7 +1231,7 @@ def main():
     deep_f1_str = f"{deep_f1:.3f}" if deep_f1 is not None else "n/a (--no-train)"
     print(f"  XGBoost CV F1     : {xgb_f1_str}")
     print(f"  Deep best val F1  : {deep_f1_str}")
-    print(f"\n  Output: {OUT_PATH}")
+    print(f"\n  Output: {out_path or OUT_PATH}")
     print(f"  Models: {MODEL_DIR}")
     print(f"\n  CloudCompare — colour by 'ensemble': "
           f"0=land (brown)  1=water (blue)  2=uncertain (gold)")

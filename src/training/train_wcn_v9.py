@@ -936,6 +936,7 @@ def export_results(
         xgb_proba: np.ndarray,
         orig_labels: np.ndarray,
         out_dir: Path,
+        reconstructed_label: np.ndarray | None = None,
 ) -> None:
     """Save labeled_pointcloud_wcn.csv and topdown scatter plot."""
     N = len(feat_df)
@@ -965,6 +966,11 @@ def export_results(
         "xgb_proba":     np.round(xgb_proba,  4),
         "ensemble":      ensemble,
     })
+    if reconstructed_label is not None:
+        # 0=land 1=water 2=uncertain 3=recon-water (waterbed reconstruction)
+        out["reconstructed_label"] = reconstructed_label
+        n_recon = int((reconstructed_label == 3).sum())
+        print(f"  Reconstructed water points (label=3): {n_recon:,}")
     # Append key diagnostic features for CloudCompare
     for col in ["energy_concentration", "n_gaps", "gap_ratio", "depth_proxy_m",
                 "n_peaks", "energy_ratio_late"]:
@@ -1020,21 +1026,30 @@ def export_results(
 # MAIN
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _load_labels_for_inference(N: int) -> np.ndarray:
-    """Load or bootstrap labels for export. Tries labeled_pointcloud_wcn.csv first,
-    falls back to labeled_pointcloud_current.csv (bootstrapping stage 6 inline)."""
+def _load_labels_for_inference(N: int) -> tuple[np.ndarray, np.ndarray | None]:
+    """Load or bootstrap labels for export.
+
+    Returns (ensemble_labels, reconstructed_label_or_None).
+    Tries labeled_pointcloud_wcn.csv first, falls back to
+    labeled_pointcloud_current.csv (bootstrapping stage 6 inline).
+    """
     pc_cur = ROOT / "pointclouds" / "labeled_pointcloud_current.csv"
     if LABELS_PATH.exists():
-        lab_df = pd.read_csv(LABELS_PATH, usecols=["ensemble"])
+        cols = ["ensemble"]
+        lab_df = pd.read_csv(LABELS_PATH)
         assert len(lab_df) == N
-        return lab_df["ensemble"].values.astype(np.int8)
+        recon = (lab_df["reconstructed_label"].values.astype(np.int8)
+                 if "reconstructed_label" in lab_df.columns else None)
+        return lab_df["ensemble"].values.astype(np.int8), recon
     if pc_cur.exists():
         print(f"  labeled_pointcloud_wcn.csv not found — bootstrapping from {pc_cur.name}")
-        df = pd.read_csv(pc_cur, usecols=["merged_label"])
+        df = pd.read_csv(pc_cur)
         assert len(df) == N
-        return df["merged_label"].values.astype(np.int8)
+        recon = (df["reconstructed_label"].values.astype(np.int8)
+                 if "reconstructed_label" in df.columns else None)
+        return df["merged_label"].values.astype(np.int8), recon
     raise FileNotFoundError(
-        f"No label source found. Run water_surface_model.py first.")
+        "No label source found. Run water_surface_model.py first.")
 
 
 def main():
@@ -1093,12 +1108,13 @@ def main():
         wcn_proba = run_full_inference(model, wf_norm, scalars_norm, DEVICE)
         xgb_proba = xgb_m.predict_proba(scalars_norm)[:, 1].astype(np.float32)
 
-        labels = _load_labels_for_inference(N)
+        labels, recon = _load_labels_for_inference(N)
         print(f"  Labels: land={int((labels==0).sum()):,}  "
               f"water={int((labels==1).sum()):,}  "
               f"uncertain={int((labels==2).sum()):,}")
 
-        export_results(feat_df, wcn_proba, xgb_proba, labels, MODEL_DIR)
+        export_results(feat_df, wcn_proba, xgb_proba, labels, MODEL_DIR,
+                       reconstructed_label=recon)
 
         print("\n" + "=" * 60)
         print("WCN v9 inference complete (--no-train).")
@@ -1111,13 +1127,14 @@ def main():
         raise FileNotFoundError(
             f"{LABELS_PATH}\nRun stage 6 (bootstrap labels) first.")
 
-    lab_df  = pd.read_csv(LABELS_PATH,
-                          usecols=["ensemble", "wcn_proba", "xgb_proba"])
+    lab_df  = pd.read_csv(LABELS_PATH)
     assert len(lab_df) == N
     labels     = lab_df["ensemble"].values.astype(np.int8)
     conf       = ((lab_df["wcn_proba"].values + lab_df["xgb_proba"].values)
                   * 0.5).astype(np.float32)
     weights    = np.where(labels == 1, conf, 1.0).astype(np.float32)
+    recon      = (lab_df["reconstructed_label"].values.astype(np.int8)
+                  if "reconstructed_label" in lab_df.columns else None)
     print(f"  land={int((labels==0).sum()):,}  water={int((labels==1).sum()):,}  "
           f"uncertain={int((labels==2).sum()):,}")
 
@@ -1149,7 +1166,8 @@ def main():
         model.load_state_dict(torch.load(refined_path, map_location=DEVICE))
 
     wcn_proba = run_full_inference(model, wf_norm, scalars_norm, DEVICE)
-    export_results(feat_df, wcn_proba, xgb_proba, labels, MODEL_DIR)
+    export_results(feat_df, wcn_proba, xgb_proba, labels, MODEL_DIR,
+                   reconstructed_label=recon)
 
     all_metrics = {
         "scalar_features": SCALAR_FEATURES,
