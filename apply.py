@@ -149,24 +149,27 @@ def main() -> None:
         "Stage 7: WCN v9 Inference",
     )
 
-    # ── Stage 8: geometry refinement using v9 probabilities ───────────────────
+    # ── Stage 8: v10 — geometry refinement using v9 probabilities ────────────
     # Re-run surface + waterbed reconstruction anchored on v9 probs (better than v8).
     # v9 produces more accurate water/land probabilities → tighter footprint,
     # better surface grid, more accurate waterbed reconstruction.
-    final_out = ROOT / "pointclouds" / "labeled_pointcloud_final.csv"
+    v10_out     = ROOT / "pointclouds" / "labeled_pointcloud_v10.csv"
+    v10_plotdir = ROOT / "models"      / "v10"
     _run(
         [sys.executable, "src/labeling/water_surface_model.py",
          "--label-src", str(OUT),
          "--geometry-only",
-         "--out", str(final_out)],
-        "Stage 8: v9 Geometry Refinement (surface + waterbed on v9 probs)",
+         "--out",      str(v10_out),
+         "--plot-dir", str(v10_plotdir)],
+        "Stage 8: v10 — v9 Geometry Refinement (surface + waterbed on v9 probs)",
     )
 
     _header("DONE")
-    print(f"\n  Final output  : {final_out}")
+    print(f"\n  Final output  : {v10_out}")
+    print(f"  Plots         : {v10_plotdir}/")
     print(f"  (v9 ML output : {OUT})")
-    print(f"\n  Open labeled_pointcloud_final.csv in CloudCompare:")
-    print(f"  Colour by 'ensemble'  →  0=land  1=water  2=uncertain")
+    print(f"\n  Open labeled_pointcloud_v10.csv in CloudCompare:")
+    print(f"  Colour by 'ensemble'         →  0=land  1=water  2=uncertain")
     print(f"  Colour by 'reconstructed_label'  →  3=waterbed-reconstructed water")
 
 

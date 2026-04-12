@@ -125,23 +125,33 @@ ALL_FEATURES = WAVEFORM_FEATURES + RELATIVE_FEATURES
 # PHASE 1 — TIGHT RIVER FOOTPRINT
 # ══════════════════════════════════════════════════════════════════════════════
 
-def build_tight_footprint(feat_df, v6_df):
+def build_tight_footprint(feat_df, v6_df, geometry_only=False):
     """
     Concave hull of high-confidence water detections, eroded inward.
 
     Two-tier anchor selection:
-      Tier 1: ensemble=1, conf ≥ FOOTPRINT_CONF, z < RIVERBED_Z_MAX
+      Tier 1: conf ≥ FOOTPRINT_CONF, z < RIVERBED_Z_MAX
               → certain laser-hit-the-bottom points (deepest, most reliable)
-      Tier 2: ensemble=1, conf ≥ FOOTPRINT_CONF_SURFACE, z < RIVERBED_Z_SURFACE_MAX
+      Tier 2: conf ≥ FOOTPRINT_CONF_SURFACE, z < RIVERBED_Z_SURFACE_MAX
               → water-surface returns in shallow/bend sections where the laser
               does not reach the riverbed (covers river turns missed by tier-1)
-    """
-    mc     = (v6_df["xgb_proba"].values + v6_df["deep_proba"].values) * 0.5
-    z      = feat_df["z"].values
-    ens    = v6_df["ensemble"].values
 
-    tier1  = (ens == 1) & (mc >= FOOTPRINT_CONF) & (z < RIVERBED_Z_MAX)
-    tier2  = (ens == 1) & (mc >= FOOTPRINT_CONF_SURFACE) & (z < RIVERBED_Z_SURFACE_MAX)
+    geometry_only=True: use deep_proba (WCN) alone — v9 XGBoost calibrates
+    differently and requiring ensemble agreement under-counts riverbed anchors.
+    """
+    z = feat_df["z"].values
+
+    if geometry_only:
+        # WCN transformer proba is the primary v9 signal; don't require
+        # agreement from the 11-feature XGBoost which has different calibration.
+        conf = v6_df["deep_proba"].values
+        tier1 = (conf >= FOOTPRINT_CONF) & (z < RIVERBED_Z_MAX)
+        tier2 = (conf >= FOOTPRINT_CONF_SURFACE) & (z < RIVERBED_Z_SURFACE_MAX)
+    else:
+        mc    = (v6_df["xgb_proba"].values + v6_df["deep_proba"].values) * 0.5
+        ens   = v6_df["ensemble"].values
+        tier1 = (ens == 1) & (mc >= FOOTPRINT_CONF) & (z < RIVERBED_Z_MAX)
+        tier2 = (ens == 1) & (mc >= FOOTPRINT_CONF_SURFACE) & (z < RIVERBED_Z_SURFACE_MAX)
 
     # Proximity filter: only keep tier-2 anchors within TIER2_MAX_DIST_FROM_T1 metres
     # of a tier-1 (riverbed) anchor.  This prevents surface water-like returns in
@@ -206,7 +216,7 @@ def build_tight_footprint(feat_df, v6_df):
 # PHASE 2 — LOCAL ADAPTIVE SURFACE GRID
 # ══════════════════════════════════════════════════════════════════════════════
 
-def build_surface_grid(feat_df, v6_df, tier1_xy=None):
+def build_surface_grid(feat_df, v6_df, tier1_xy=None, geometry_only=False):
     """
     Build a 2m-resolution grid of estimated water-surface elevations.
 
@@ -223,6 +233,9 @@ def build_surface_grid(feat_df, v6_df, tier1_xy=None):
     tier1_xy : (N,2) float array or None
         XY coordinates of tier-1 (riverbed) anchor points.  If None, the
         proximity guard is skipped (all primary estimates are accepted).
+    geometry_only : bool
+        Use deep_proba (WCN) directly for RANSAC candidates instead of
+        requiring ensemble agreement with the 11-feature XGBoost.
 
     Returns
     -------
@@ -235,8 +248,12 @@ def build_surface_grid(feat_df, v6_df, tier1_xy=None):
     z_all = feat_df["z"].values
 
     # ── RANSAC global plane (same as v7, used as fallback) ─────────────────────
-    mc   = (v6_df["xgb_proba"].values + v6_df["deep_proba"].values) * 0.5
-    conf = (v6_df["ensemble"].values == 1) & (mc >= 0.7)
+    if geometry_only:
+        # WCN proba alone — don't require agreement from 11-feature XGBoost
+        conf = v6_df["deep_proba"].values >= 0.7
+    else:
+        mc   = (v6_df["xgb_proba"].values + v6_df["deep_proba"].values) * 0.5
+        conf = (v6_df["ensemble"].values == 1) & (mc >= 0.7)
     surf_cand = (conf
                  & (z_all >= 259.4) & (z_all <= 260.2)
                  & (feat_df["n_peaks"].values <= 3)
@@ -810,7 +827,7 @@ def train_deep(feat_df, grids_all, merged_labels, out_dir,
 def export_and_plot(feat_df, in_footprint, local_surface_z, merged_label,
                     xgb_proba, deep_proba, grid_z, x_min, y_min, n_x, n_y,
                     footprint_poly, raw_hull, plane_coef, out_dir,
-                    reconstructed_label=None, out_path=None):
+                    reconstructed_label=None, out_path=None, geometry_only=False):
     N = len(feat_df)
     x = feat_df["x"].values; y = feat_df["y"].values; z = feat_df["z"].values
 
@@ -900,16 +917,32 @@ def export_and_plot(feat_df, in_footprint, local_surface_z, merged_label,
     # ── Plot 1: top-down scatter (non-canopy + river boundary contours) ──────────
     nc = z <= CANOPY_Z_MAX   # non-canopy mask
 
-    mean_proba = (xgb_proba + deep_proba) / 2.0
+    model_label = "v10 WCN+Geometry" if geometry_only else "v8 Surface Model"
+
+    # Contours from final geometry-corrected ensemble, not raw waveform proba.
+    # Raw waveform proba diverges from the scatter colours after geometry
+    # correction (footprint overrides, waterbed reconstruction), so contours
+    # built from it don't follow the displayed water class.
+    # Map: water=1 → 1.0, uncertain=2 → 0.5, land=0 → 0.0
+    ensemble_field = np.where(ensemble[nc] == 1, 1.0,
+                     np.where(ensemble[nc] == 2, 0.5, 0.0)).astype(np.float32)
+
     print("\n  Computing river boundary contours for scatter …")
-    grid_raw, rb_x_min, rb_y_min, rb_n_x, rb_n_y = rasterize(x, y, mean_proba)
+    grid_raw, rb_x_min, rb_y_min, rb_n_x, rb_n_y = rasterize(x[nc], y[nc], ensemble_field)
     grid_smooth = fill_and_smooth(grid_raw)
     rb_contours = extract_contours(grid_smooth, rb_x_min, rb_y_min)
+
+    # 10 m padding so contours and footprint can extend past the scatter cloud
+    PLOT_PAD = 10.0
+    x_lo = float(x[nc].min()) - PLOT_PAD
+    x_hi = float(x[nc].max()) + PLOT_PAD
+    y_lo = float(y[nc].min()) - PLOT_PAD
+    y_hi = float(y[nc].max()) + PLOT_PAD
 
     fig, axes = plt.subplots(1,2,figsize=(22,9))
     for ax, (arr, title) in zip(axes, [
         (merged_label[nc], f"Merged Labels — no canopy (z ≤ {CANOPY_Z_MAX}m)"),
-        (ensemble[nc],     f"v8 Retrained Ensemble — no canopy (z ≤ {CANOPY_Z_MAX}m)"),
+        (ensemble[nc],     f"{model_label} Ensemble — no canopy (z ≤ {CANOPY_Z_MAX}m)"),
     ]):
         xs, ys = x[nc], y[nc]
         for lv in [2,0,1]:
@@ -917,22 +950,25 @@ def export_and_plot(feat_df, in_footprint, local_surface_z, merged_label,
             if not m.any(): continue
             ax.scatter(xs[m],ys[m],c=cm[lv],s=0.4,alpha=0.6,
                        label=f"{lm[lv]} ({m.sum():,})",rasterized=True)
-        # Tight footprint boundary (filled so over-extension into land is visible)
+        # Tight footprint boundary
         _plot_poly(ax, footprint_poly, color="k", lw=1.5, label="Tight footprint",
                    fill=True, fill_color="steelblue", fill_alpha=0.10, zorder=6)
         # Raw hull (before erosion)
         _plot_poly(ax, raw_hull, color="grey", lw=0.8, linestyle="--",
                    label="Raw hull (pre-erosion)", zorder=5)
-        # River boundary contours from mean probability field
+        # River boundary contours from ensemble labels
         _draw_contours(ax, rb_contours)
-        ax.set_aspect("equal"); ax.set_xlabel("x (m)"); ax.set_ylabel("y (m)")
+        ax.set_aspect("equal", adjustable="box")
+        ax.set_xlim(x_lo, x_hi)
+        ax.set_ylim(y_lo, y_hi)
+        ax.set_xlabel("x (m)"); ax.set_ylabel("y (m)")
         ax.set_title(title)
         handles, labels_leg = ax.get_legend_handles_labels()
         by_label = dict(zip(labels_leg, handles))
         ax.legend(by_label.values(), by_label.keys(), markerscale=6, fontsize=7)
     plt.suptitle(
-        f"v8 Adaptive Surface Model — Top-down view\n"
-        f"River boundary: inner p={PROB_INNER} (white) · "
+        f"{model_label} — Top-down view\n"
+        f"Contours from final ensemble: inner p={PROB_INNER} (white) · "
         f"center p={PROB_CENTER} (yellow) · outer p={PROB_OUTER} (orange)",
         fontsize=11,
     )
@@ -1079,11 +1115,16 @@ def main():
                         "Geometry (phases 1-3b) still runs using label-src as anchors.")
     p.add_argument("--out", type=Path, default=None,
                    help="Override output CSV path (default: labeled_pointcloud_current.csv)")
+    p.add_argument("--plot-dir", type=Path, default=None,
+                   help="Override directory for plots and metrics JSON "
+                        "(default: models/current/). Created if absent.")
     args = p.parse_args()
 
     label_src = args.label_src or V6_WF_CSV
     out_path  = args.out or OUT_PATH
+    plot_dir  = args.plot_dir or MODEL_DIR
     os.makedirs(MODEL_DIR, exist_ok=True)
+    os.makedirs(plot_dir, exist_ok=True)
     if args.out:
         os.makedirs(args.out.parent, exist_ok=True)
 
@@ -1113,7 +1154,8 @@ def main():
     print(f"\n{'='*60}")
     print("PHASE 1 — TIGHT RIVER FOOTPRINT")
     print(f"{'='*60}")
-    footprint_poly, raw_hull, tier1_xy = build_tight_footprint(feat_df, v6_df)
+    footprint_poly, raw_hull, tier1_xy = build_tight_footprint(
+        feat_df, v6_df, geometry_only=args.geometry_only)
     in_footprint = contains_xy(footprint_poly,
                                 feat_df["x"].values, feat_df["y"].values)
     print(f"  Points inside tight footprint: {in_footprint.sum():,} "
@@ -1124,7 +1166,8 @@ def main():
     print("PHASE 2 — LOCAL ADAPTIVE SURFACE GRID")
     print(f"{'='*60}")
     grid_z, x_min, y_min, n_x, n_y, xi, yi, plane_coef = \
-        build_surface_grid(feat_df, v6_df, tier1_xy=tier1_xy)
+        build_surface_grid(feat_df, v6_df, tier1_xy=tier1_xy,
+                           geometry_only=args.geometry_only)
 
     # Look up per-point local surface elevation
     local_surface_z = grid_z[yi, xi].astype(np.float32)
@@ -1188,9 +1231,10 @@ def main():
         feat_df, in_footprint, local_surface_z, merged_label,
         xgb_proba_all, deep_proba_all,
         grid_z, x_min, y_min, n_x, n_y,
-        footprint_poly, raw_hull, plane_coef, MODEL_DIR,
+        footprint_poly, raw_hull, plane_coef, plot_dir,
         reconstructed_label=reconstructed_label,
-        out_path=out_path)
+        out_path=out_path,
+        geometry_only=args.geometry_only)
 
     metrics = {
         "footprint": {
@@ -1223,7 +1267,8 @@ def main():
             "uncertain": int((final_ens==2).sum()),
         },
     }
-    with open(os.path.join(MODEL_DIR,"v8_metrics.json"),"w") as fh:
+    metrics_name = "v8_metrics.json" if plot_dir == MODEL_DIR else "metrics.json"
+    with open(os.path.join(plot_dir, metrics_name),"w") as fh:
         json.dump(metrics,fh,indent=2)
 
     print(f"\n{'='*60}")
@@ -1243,7 +1288,7 @@ def main():
     print(f"  XGBoost CV F1     : {xgb_f1_str}")
     print(f"  Deep best val F1  : {deep_f1_str}")
     print(f"\n  Output: {out_path or OUT_PATH}")
-    print(f"  Models: {MODEL_DIR}")
+    print(f"  Plots : {plot_dir}")
     print(f"\n  CloudCompare — colour by 'ensemble': "
           f"0=land (brown)  1=water (blue)  2=uncertain (gold)")
     print(f"  Also: 'in_footprint' shows the tight channel mask directly.")
