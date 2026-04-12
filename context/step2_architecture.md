@@ -1,34 +1,25 @@
 # Step 2 Architecture: WaveformNet v9 (Generalizable)
 
-**Proposed 2026-04. Designed to classify any 532 nm bathymetric LiDAR point cloud,
-regardless of site elevation, river width, valley shape, or point density.**
+**Proposed 2026-04. Classifies any 532 nm bathymetric LiDAR point cloud. No site elevation, river width, valley shape, or point density assumptions.**
 
 ---
 
 ## 0. The Generalization Problem
 
-The current v8 model (V8Net) achieves F1=0.956 on the Pielach dataset but relies
-on features that are **survey-specific**:
+V8Net: F1=0.956 on Pielach. Relies on **survey-specific** features:
 
 | Feature group | Why it fails on a new survey |
 |---|---|
-| `height_above_local_min`, `height_percentile_local` | Computed from k-NN at a *specific density*. A different scanner altitude, overlap pattern, or decimation ratio changes which points are neighbors, and hence the height statistics. Also assumes river = valley floor, which fails for levee-bounded rivers. |
-| `planarity`, `roughness`, `linearity`, `sphericity` | k-NN PCA eigenvalue ratios. Entirely density-dependent — the same surface looks different at 15 cm vs. 5 cm spacing. |
-| `height_range_local`, `height_std_local` | Same problem: density + topology dependent. |
-| `z_relative` | Absolute elevation reference. Meaningless for another site. |
-| `n_samples`, `time_span`, raw `max_gap`, `total_gap` | In **scanner SI units** (1 SI = 0.5 ns for RIEGL). A different scanner with 1 ns sampling gives half the bin count for the same depth. |
-| `max_amp`, `mean_amp`, `std_amp`, `total_energy` | Absolute ADC amplitudes. Scanner gain (AGC), target distance, atmosphere, and receiver sensitivity all affect these. Not portable. |
+| `height_above_local_min`, `height_percentile_local` | k-NN at *specific density*. Scanner altitude/overlap/decimation changes neighbors → changes stats. Assumes river=valley floor; fails for levee-bounded rivers. |
+| `planarity`, `roughness`, `linearity`, `sphericity` | k-NN PCA eigenvalue ratios. Density-dependent — same surface differs at 15 cm vs. 5 cm spacing. |
+| `height_range_local`, `height_std_local` | Density + topology dependent. |
+| `z_relative` | Absolute elevation. Useless on new sites. |
+| `n_samples`, `time_span`, raw `max_gap`, `total_gap` | **Scanner SI units** (1 SI = 0.5 ns for RIEGL). Different scanner (1 ns) → half bin count for same depth. |
+| `max_amp`, `mean_amp`, `std_amp`, `total_energy` | Absolute ADC amplitudes. AGC, distance, atmosphere, receiver sensitivity vary. Not portable. |
 
-The current pointcloud is also pruned (234k of 1.6M points). A model that works
-on the pruned version must also work on the full-density version and on different
-surveys. Any feature that encodes "how many neighbours are nearby" breaks immediately.
+Pointcloud pruned (234k of 1.6M). Model must work on full-density + new surveys. Features encoding neighbor count break immediately.
 
-**The fundamental insight**: the laser–target interaction physics is universal.
-Water and land produce different *waveform shapes* because of their different
-optical properties (specular vs. diffuse scattering, water-column exponential
-backscatter, SVB decomposition). This shape information is encoded in the
-**normalized waveform** and in **dimensionless ratios of waveform properties**.
-Nothing else is needed — and anything else is a liability.
+**Fundamental insight**: laser–target physics universal. Water/land differ in *waveform shape* (specular vs. diffuse, water-column backscatter, SVB). Shape → **normalized waveform** + **dimensionless ratios**. All else = liability.
 
 ---
 
@@ -42,24 +33,17 @@ waveform_norm[i] = waveform_grid[i] / max(waveform_grid[i])   # per-waveform max
 ```
 Values in [0, 1]. Preserves shape, discards absolute amplitude (scanner/AGC-dependent).
 
-**Important**: use *per-waveform* normalization, NOT the global z-score normalization used in V8Net.
-Global z-score is dataset-specific; per-waveform max is portable — any single waveform from any
-scanner can be divided by its own max with no dataset statistics needed.
+**Important**: use *per-waveform* norm, NOT global z-score (V8Net). Global z-score = dataset-specific. Per-waveform max = portable, zero external stats.
 
 **Channel 1 — activity mask** (float32 0/1):
 ```
 mask[i] = (waveform_grid[i] > 0).astype(float32)
 ```
-Makes the gap structure explicit. The gap between surface and bottom return clusters is the most
-physically meaningful feature for depth detection (it encodes water column traversal time).
-The Transformer attends to the amplitude channel, but the mask channel tells it exactly where
-signal exists and where it does not — removing ambiguity between "zero amplitude bins" and
-"bins outside the waveform window."
+Gap structure explicit. Surface-bottom gap = most meaningful feature (encodes water column time). Transformer attends amplitude; mask signals where signal exists — no ambiguity between zero-amp bins and out-of-window bins.
 
 ### 1.2  Scalar Features: 11 Dimensionless / Physical-Unit Ratios
 
-All features below are either dimensionless (ratios, fractions, counts) or in physical meters.
-None require knowledge of point density, survey elevation, or scanner sampling rate.
+All dimensionless (ratios, fractions, counts) or physical meters. No density/elevation/sampling rate required.
 
 ```python
 GENERALIZABLE_FEATURES = [
@@ -91,7 +75,7 @@ GENERALIZABLE_FEATURES = [
 # Total: 11 features
 ```
 
-The two derived features must be computed in a pre-processing step:
+Two derived features computed in pre-processing:
 ```python
 feat_df['gap_ratio']          = feat_df['total_gap'] / feat_df['time_span'].clip(lower=1)
 feat_df['energy_center_norm'] = feat_df['amplitude_weighted_center'] / feat_df['n_samples'].clip(lower=1)
@@ -101,25 +85,21 @@ feat_df['energy_center_norm'] = feat_df['amplitude_weighted_center'] / feat_df['
 
 | Excluded feature | Reason |
 |---|---|
-| `reflectance_dB` | Only 6.8% mean separation (water=-22.7 dB, land=-21.3 dB) with σ≈5 dB — barely above noise. Scanner-calibration and target-distance dependent. Adds more noise than signal for generalization. |
-| `height_above_local_min`, `height_percentile_local` | Strong on Pielach (76.6%), useless elsewhere — density + topology dependent. |
+| `reflectance_dB` | 6.8% mean sep (water=-22.7 dB, land=-21.3 dB), σ≈5 dB — near noise. Scanner-cal + distance dependent. More noise than signal. |
+| `height_above_local_min`, `height_percentile_local` | Strong on Pielach (76.6%), useless elsewhere. Density + topology dependent. |
 | `planarity`, `roughness`, `linearity`, `sphericity` | k-NN PCA. Density-dependent. |
 | `z_relative`, `height_range_local`, `height_std_local` | Absolute elevation / density dependent. |
 | `max_amp`, `mean_amp`, `std_amp`, `total_energy` | Absolute ADC units. Scanner/AGC/distance dependent. |
 | `n_samples`, `time_span`, `max_gap`, `mean_gap`, `total_gap` (raw SI) | Scanner sampling-rate dependent. Use `depth_proxy_m` and `gap_ratio` instead. |
-| Spatial k-NN context | Density-dependent. The geometry of a 32-NN neighborhood changes completely at different point spacings. |
+| Spatial k-NN context | Density-dependent. 32-NN geometry changes at different spacings. |
 
-**Note on reflectance**: it is excluded here because it is the weakest feature (6.8% separation)
-and introduces calibration dependency. If deploying on a survey with verified reflectance
-calibration (same scanner family, same target distance), it can be added as a 12th feature with
-appropriate weight decay to limit its influence.
+**Note on reflectance**: weakest feature (6.8% sep), adds calibration dependency. Add as 12th feature if survey has verified calibration (same scanner family, same distance) — use weight decay.
 
 ---
 
 ## 2. Architecture
 
-The model has two branches that fuse into a classification head.
-No spatial context. No graph layers. Pure waveform physics.
+Two branches → classification head. No spatial context. No graph layers. Pure waveform physics.
 
 ```
   waveform (B, 2, 200)  ──→  WAVEFORM TRANSFORMER  ──→  (B, 128)
@@ -173,16 +153,12 @@ Output: (B, 128)
 ```
 
 **Why 6 Transformer layers?**  
-3 layers can distinguish simple vs. complex waveforms but struggle with subtle SVB patterns
-(e.g., when the bottom return is weak or absent). 6 layers allow the model to first detect
-individual peaks (early layers), then compute peak relationships (middle layers), then reason
-about the full SVB pattern (deep layers). 8+ layers shows diminishing returns on 50-token inputs.
+3 layers: simple vs. complex OK, subtle SVB fails (weak/absent bottom return). 6 layers: peaks (early) → relationships (mid) → full SVB (deep). 8+ = diminishing returns on 50 tokens.
 
 **What the attention learns**:
-- Token 0 (bins 0–3): typically the surface return peak
-- Tokens 8–20 (bins 32–80): where the bottom return appears for typical river depths (0.5–5 m)
-- Attention between token 0 and later bottom-return tokens implements implicit SVB decomposition:
-  the model learns "is there a bottom return?" and "how far is it?" — the depth proxy in continuous form
+- Token 0 (bins 0–3): surface return peak
+- Tokens 8–20 (bins 32–80): bottom return for typical depths (0.5–5 m)
+- Attention token 0 ↔ bottom-return tokens → implicit SVB: "bottom return present? how far?" = continuous depth proxy.
 
 **Parameters**: ~1.5M
 
@@ -204,8 +180,7 @@ Linear(128→64) + BN + GELU
 Output: (B, 64)
 ```
 
-The scalar branch is smaller than in the previous design (64 vs 128 output) because 11 features
-carry less redundant information than 32. Residual connections are kept for gradient stability.
+Smaller than prev design (64 vs 128 output): 11 features less redundant than 32. Residuals kept for gradient stability.
 
 **Parameters**: ~100k
 
@@ -223,8 +198,7 @@ x = Linear(128→2)                  → logits
 Output: (B, 2)  — class 0=land, class 1=water
 ```
 
-Dropout only in the head. No dropout in the Transformer or scalar branch —
-batch normalisation already regularises the scalar branch.
+Dropout in head only. No dropout in Transformer/scalar branch — BN regularises scalar branch.
 
 **Total parameters**: ~1.75M  (vs. V8Net ~500k, previous WCN design ~2.7M)
 
@@ -232,17 +206,13 @@ batch normalisation already regularises the scalar branch.
 
 ## 3. Training Protocol
 
-Three phases. Total expected time: **~8–12 hours CPU, ~2 hours GPU**.
+Three phases. **~8–12 hr CPU, ~2 hr GPU**.
 
 ---
 
 ### Phase 1 — Masked Waveform Autoencoder (self-supervised, no labels)
 
-The Transformer is initialized by predicting masked waveform content before ever
-seeing labels. This is critical for convergence: random initialization produces an
-attention pattern that ignores the gap between surface and bottom returns entirely.
-Masked autoencoding forces the encoder to learn that the inter-cluster gap carries
-information (you need context from before and after the gap to reconstruct the masked region).
+Transformer predicts masked content before labels. Critical for convergence: random init ignores surface-bottom gap. Masking forces encoder to learn gap = information (needs before/after context to reconstruct).
 
 ```
 Masking:
@@ -267,8 +237,7 @@ Batch:      1024
 Approx:     30 min (GPU) / 3 hr (CPU)
 ```
 
-After pretraining, save waveform encoder weights. Freeze the first 2 Transformer layers
-during Phase 2 warm-up.
+Save waveform encoder weights. Freeze first 2 Transformer layers in Phase 2 warm-up.
 
 ---
 
@@ -276,7 +245,7 @@ during Phase 2 warm-up.
 
 **Labels**: `merged_label ∈ {0, 1}`. The 3,998 uncertain points (label=2) are excluded.
 
-**Confidence weighting**: v8 labels vary in quality. Weight each training sample:
+**Confidence weighting**: v8 labels vary. Per-sample weights:
 
 ```python
 conf_i  = (xgb_proba_i + deep_proba_i) * 0.5
@@ -284,9 +253,7 @@ weight_i = conf_i      if label_i == 1   # water labels: weight by model agreeme
 weight_i = 1.0         if label_i == 0   # land labels: geometrically assigned, high reliability
 ```
 
-Practical effect: the ~500 water points with conf < 0.5 get near-zero weight and do not
-corrupt gradients. The 75th percentile water confidence is 0.98, so most water labels are
-well-calibrated.
+~500 water points conf < 0.5 → near-zero weight, no gradient corruption. 75th pct water conf = 0.98 → most labels well-calibrated.
 
 **Loss function**:
 
@@ -310,8 +277,7 @@ L = L_focal + λ_aux1 * L_energy_conc + λ_aux2 * L_depth_proxy
 λ_aux2 = 0.05
 ```
 
-Both auxiliary heads are discarded after training. They exist only to guide the
-waveform encoder toward representations that preserve physically meaningful information.
+Aux heads discarded after training. Guide encoder to preserve physically meaningful representations.
 
 **Schedule**:
 
@@ -329,8 +295,7 @@ Early stopping: patience=20 on spatial-CV macro-F1
 Approx: 1.5 hr (GPU) / 7 hr (CPU)
 ```
 
-**Spatial cross-validation**: 5 folds split by y-coordinate strips (same as V8Net).
-This is the only place where the spatial structure of the Pielach dataset is used.
+**Spatial cross-validation**: 5 folds by y-coordinate strips (same as V8Net). Only use of Pielach spatial structure.
 
 ---
 
@@ -352,32 +317,24 @@ Approx: 30 min (GPU) / 1.5 hr (CPU)
 
 ## 4. Waveform Normalisation: Per-Sample vs. Global
 
-V8Net uses global z-score normalisation (mean/std computed from the training dataset).
-This is problematic for deployment:
-- The training dataset statistics are survey-specific
-- A new survey with different water clarity or scanner gain would have different raw amplitude distributions
-- The model silently receives out-of-distribution inputs
+V8Net: global z-score (training dataset). Problematic for deployment:
+- Training stats = survey-specific
+- New survey (diff water clarity/gain) → diff amplitude distributions
+- Model silently gets OOD inputs
 
-WCN v9 uses **per-sample max normalisation** for the waveform channel:
+WCN v9: **per-sample max norm** for waveform:
 ```python
 wf_norm = waveform_grid / waveform_grid.max(axis=1, keepdims=True).clip(min=1.0)
 ```
-This requires zero external statistics. Any waveform from any scanner can be processed
-identically. The shape is preserved; the absolute amplitude is discarded (it is captured
-separately by `reflectance_dB` if needed, but excluded from the current feature set).
+Zero external stats. Any scanner, identical processing. Shape preserved; absolute amplitude discarded (captured by `reflectance_dB` if needed, excluded here).
 
-For the **scalar features**, z-score normalisation is still applied, but only to the
-dimensionless ratios and counts. These statistics are far less survey-specific than absolute
-amplitudes: `n_peaks`, `gap_ratio`, `energy_concentration` have similar distributions across
-surveys using the same scanner type. Save these stats to `wcn_stats.json` for inference-time use.
+**Scalar features**: z-score still applied to dimensionless ratios/counts. Less survey-specific than absolute amplitudes: `n_peaks`, `gap_ratio`, `energy_concentration` stable across same-scanner surveys. Save to `wcn_stats.json`.
 
 ---
 
 ## 5. Optional: Site-Specific Spatial Refinement
 
-For a single-site deployment where density is known and fixed, a post-processing step
-can use local neighbourhood context to clean up boundary predictions WITHOUT encoding
-it in the model weights:
+Single-site deployment (known density): post-processing cleans boundary predictions WITHOUT touching model weights:
 
 ```python
 # After model inference, apply spatial majority vote on uncertain-margin points
@@ -391,28 +348,23 @@ for margin_point_idx in margin_mask:  # proba ∈ [0.35, 0.65]
     predictions[margin_point_idx] = majority   # override with local majority
 ```
 
-This keeps the model itself density-independent while using spatial smoothing as a
-separate, transparent post-processing step. The smoothing radius (in physical meters)
-can be explicitly tuned for each deployment.
+Model stays density-independent. Spatial smoothing = separate, transparent step. Smoothing radius (meters) tunable per deployment.
 
 ---
 
 ## 6. Improved XGBoost (Complementary)
 
-Train an XGBoost on the same 11 generalizable scalar features. This serves as a
-fast, interpretable baseline and ensemble component.
+XGBoost on 11 generalizable features. Fast, interpretable baseline + ensemble component.
 
-Compared to V8Net's XGBoost (32 features, CV F1=0.913), using only 11 features
-will likely score slightly lower on Pielach but substantially better on unseen data
-(fewer density-dependent features to overfit to).
+vs. V8Net XGBoost (32 features, F1=0.913): 11 features likely lower on Pielach, better on unseen data (fewer density-dependent features to overfit).
 
-Additional derived features to add (all generalizable):
+Additional derived features (all generalizable):
 ```python
 feat_df['peaks_per_cluster']  = feat_df['n_peaks'] / feat_df['n_clusters'].clip(lower=1)
 feat_df['gap_per_peak']       = feat_df['n_gaps']  / feat_df['n_peaks'].clip(lower=1)
 ```
 
-These ratio features further describe waveform complexity without units.
+Ratio features: describe waveform complexity, no units.
 
 XGBoost configuration (same as current):
 ```python
@@ -433,7 +385,7 @@ pred         = (final_proba[:,1] >= 0.50).astype(int)
 uncertain    = (final_proba[:,1] > 0.35) & (final_proba[:,1] < 0.65)
 ```
 
-WCN gets higher weight because it processes the raw waveform shape directly.
+WCN higher weight: processes raw waveform shape directly.
 
 ---
 
@@ -488,6 +440,6 @@ pointclouds/
 - [ ] Phase 3: pseudo-label refinement (2 rounds)
 - [ ] Train XGBoost on 11+2 generalizable features
 - [ ] Export `labeled_pointcloud_wcn.csv`
-- [ ] Visualise attention rollout: do early-layer heads attend to peaks? Do deep heads attend across the surface-bottom gap?
+- [ ] Visualise attention rollout: early heads → peaks? Deep heads → surface-bottom gap?
 - [ ] Test on full-density 1.6M point cloud (should work without retraining)
 - [ ] Verify: no feature in the model requires k-NN computation at inference time
