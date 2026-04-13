@@ -141,14 +141,17 @@ def build_tight_footprint(feat_df, v6_df, geometry_only=False):
     """
     z = feat_df["z"].values
 
+    mc   = (v6_df["xgb_proba"].values + v6_df["deep_proba"].values) * 0.5
+    deep = v6_df["deep_proba"].values
+
     if geometry_only:
-        # WCN transformer proba is the primary v9 signal; don't require
-        # agreement from the 11-feature XGBoost which has different calibration.
-        conf = v6_df["deep_proba"].values
-        tier1 = (conf >= FOOTPRINT_CONF) & (z < RIVERBED_Z_MAX)
-        tier2 = (conf >= FOOTPRINT_CONF_SURFACE) & (z < RIVERBED_Z_SURFACE_MAX)
+        # Tier-1 (riverbed, z < 259.6m): WCN alone is sufficient — anything
+        # that deep is unambiguously underwater regardless of XGBoost agreement.
+        # Tier-2 (surface, z < 261.5m): use mean proba — this zone includes
+        # compact-waveform gravel bars that WCN alone mislabels as water.
+        tier1 = (deep >= FOOTPRINT_CONF) & (z < RIVERBED_Z_MAX)
+        tier2 = (mc   >= FOOTPRINT_CONF_SURFACE) & (z < RIVERBED_Z_SURFACE_MAX)
     else:
-        mc    = (v6_df["xgb_proba"].values + v6_df["deep_proba"].values) * 0.5
         ens   = v6_df["ensemble"].values
         tier1 = (ens == 1) & (mc >= FOOTPRINT_CONF) & (z < RIVERBED_Z_MAX)
         tier2 = (ens == 1) & (mc >= FOOTPRINT_CONF_SURFACE) & (z < RIVERBED_Z_SURFACE_MAX)
@@ -836,11 +839,29 @@ def export_and_plot(feat_df, in_footprint, local_surface_z, merged_label,
     agree     = xgb_pred == deep_pred
     ensemble  = xgb_pred.copy(); ensemble[~agree] = 2
 
-    # Geometry overrides ML inside the footprint where merged_label is confident.
-    # Without this, ML disagreement inside the footprint leaks into ensemble as
-    # "uncertain" or "land" even when surface geometry says water.
-    geo_confident = in_footprint & (merged_label != 2)
-    ensemble[geo_confident] = merged_label[geo_confident]
+    # Geometry override — three zones by z relative to the local water surface:
+    #
+    #  Zone A  z < local_surface_z           (clearly submerged)
+    #          Geometry wins unconditionally.  Recovers turbid water and
+    #          tree-over-water false negatives where ML says land/uncertain.
+    #
+    #  Zone B  local_surface_z ≤ z ≤ surface + WATER_TOL  (near-surface fringe)
+    #          Geometry only resolves ML *uncertainty* (ensemble==2).
+    #          Confident ML land stays land — gravel bars at the water line have
+    #          compact waveforms that the geometry surface grid can't distinguish
+    #          from open water; let the ML discriminate.
+    #
+    #  Zone C  z > local_surface_z + WATER_TOL  (above surface, inside footprint)
+    #          Geometry wins: exposed rock / gravel bank → land.
+    z_diff = z - local_surface_z
+
+    geo_submerged   = in_footprint & (z_diff <  0.0)           # Zone A
+    geo_near_surf   = in_footprint & (z_diff >= 0.0) & (z_diff <= WATER_TOL)  # Zone B
+    geo_above_surf  = in_footprint & (z_diff >  WATER_TOL)     # Zone C
+
+    ensemble[geo_submerged]                         = 1   # Zone A: always water
+    ensemble[geo_near_surf  & (ensemble == 2)]      = 1   # Zone B: resolve uncertainty only
+    ensemble[geo_above_surf]                        = 0   # Zone C: exposed bank → land
 
     # Waterbed reconstruction always wins — geometry recovered these points explicitly.
     if reconstructed_label is not None:
