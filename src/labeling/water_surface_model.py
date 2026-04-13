@@ -894,8 +894,12 @@ def export_and_plot(feat_df, in_footprint, local_surface_z, merged_label,
         print(f"    Ensemble {lv} ({nm}): {n:,}  ({100*n/N:.1f}%)")
 
     # ── CSV ────────────────────────────────────────────────────────────────────
-    _recon = (reconstructed_label if reconstructed_label is not None
-              else merged_label.copy())
+    # Base reconstructed_label on the final ensemble (v9 + geometry overrides),
+    # not on merged_label (footprint-only Phase 3 output).  Mark reconstructed
+    # points as 3 instead of 1 so CloudCompare can distinguish them.
+    _recon_out = ensemble.copy()
+    if reconstructed_label is not None:
+        _recon_out[reconstructed_label == 3] = 3
     out = pd.DataFrame({
         "x":x,"y":y,"z":z,
         "reflectance_dB": feat_df["reflectance_dB"].values
@@ -904,7 +908,7 @@ def export_and_plot(feat_df, in_footprint, local_surface_z, merged_label,
         "local_surface_z": np.round(local_surface_z,4),
         "z_above_surface": np.round(z-local_surface_z,4),
         "merged_label":   merged_label,
-        "reconstructed_label": _recon,   # 0=land 1=water 2=uncertain 3=recon-water
+        "reconstructed_label": _recon_out,  # 0=land 1=water 2=uncertain 3=recon-water
         "xgb_pred":       xgb_pred, "xgb_proba":  np.round(xgb_proba,4),
         "deep_pred":      deep_pred, "deep_proba": np.round(deep_proba,4),
         "ensemble":       ensemble,
