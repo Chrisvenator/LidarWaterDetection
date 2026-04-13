@@ -98,6 +98,8 @@ RANSAC_RESIDUAL   = 0.20
 BED_MIN_PTS       = 3     # min confirmed-bed points per cell for primary estimate
 BED_MAX_DIST      = 6.0   # metres: max dist from confirmed bed data → qualify for recon
 BED_MARGIN        = 0.5   # z headroom below reconstructed bed (sensor noise / roughness)
+BED_PROBA_MIN     = 0.95  # WCN deep_proba threshold: high-conf water → bed anchor
+                          # augments label==1 anchors with uncertain points v9 is sure about
 RECON_LABEL       = 3     # label value: reconstructed water (tree-over-water recovery)
 RECON_REFL_MAX    = -15.0 # reflectance ceiling: water << gravel at 532 nm green laser
 RECON_MIN_PEAKS   = 3     # n_peaks floor: only recover waveform-confused points
@@ -356,11 +358,16 @@ def build_surface_grid(feat_df, v6_df, tier1_xy=None, geometry_only=False):
 # PHASE 3b — WATERBED RECONSTRUCTION
 # ══════════════════════════════════════════════════════════════════════════════
 
-def build_riverbed_grid(feat_df, merged_label, x_min, y_min, n_x, n_y, xi, yi):
+def build_riverbed_grid(feat_df, merged_label, v6_df, x_min, y_min, n_x, n_y, xi, yi):
     """
     Reconstruct riverbed elevation from confirmed deep-water returns.
 
-    Anchors: merged_label==1 AND z < RIVERBED_Z_MAX (laser reached the bottom).
+    Anchors: (merged_label==1 OR deep_proba>=BED_PROBA_MIN) AND z < RIVERBED_Z_MAX.
+    Using ML confidence instead of just the prior label catches high-confidence
+    water points that Phase 3 left as uncertain (e.g. inside footprint gaps).
+    z threshold still needed — separates bed returns (z<259.6m) from surface
+    returns (z~260m) which v9 cannot distinguish from waveform alone.
+
     Per 2m cell: 5th-percentile z — the deepest confirmed return = actual riverbed.
 
     Physics: green 532 nm laser penetrates water.  The sub-surface return time
@@ -376,10 +383,17 @@ def build_riverbed_grid(feat_df, merged_label, x_min, y_min, n_x, n_y, xi, yi):
     bed_grid     : (n_y, n_x) float32 — smoothed riverbed elevation
     bed_coverage : (n_y, n_x) bool    — True where primary data exists
     """
-    z        = feat_df["z"].values
-    bed_mask = (merged_label == 1) & (z < RIVERBED_Z_MAX)
-    n_bed    = int(bed_mask.sum())
-    print(f"  Riverbed anchors (label=1, z<{RIVERBED_Z_MAX}m): {n_bed:,}")
+    z          = feat_df["z"].values
+    deep_proba = v6_df["deep_proba"].values
+    # OR: keep geometry-confirmed water AND add high-confidence v9 water
+    # that Phase 3 may have left as uncertain (footprint gaps, margin points)
+    water_conf = (merged_label == 1) | (deep_proba >= BED_PROBA_MIN)
+    bed_mask   = water_conf & (z < RIVERBED_Z_MAX)
+    n_bed      = int(bed_mask.sum())
+    n_from_proba = int(((deep_proba >= BED_PROBA_MIN) & (z < RIVERBED_Z_MAX)
+                        & (merged_label != 1)).sum())
+    print(f"  Riverbed anchors (z<{RIVERBED_Z_MAX}m): {n_bed:,} "
+          f"[label=1 + {n_from_proba:,} from deep_proba≥{BED_PROBA_MIN}]")
 
     bed_coverage = np.zeros((n_y, n_x), dtype=bool)
     if n_bed == 0:
@@ -1206,7 +1220,7 @@ def main():
     print("PHASE 3b — WATERBED RECONSTRUCTION")
     print(f"{'='*60}")
     bed_grid, bed_coverage = build_riverbed_grid(
-        feat_df, merged_label, x_min, y_min, n_x, n_y, xi, yi)
+        feat_df, merged_label, v6_df, x_min, y_min, n_x, n_y, xi, yi)
     reconstructed_label = apply_waterbed_reconstruction(
         feat_df, merged_label, local_surface_z, bed_grid, bed_coverage, xi, yi)
 
