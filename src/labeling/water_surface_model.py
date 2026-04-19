@@ -509,9 +509,12 @@ def classify(feat_df, v6_df, in_footprint, local_surface_z, wf_ensemble):
     """
     Apply the water-surface model and merge with v6 waveform predictions.
 
-    Inside the tight footprint — geometry dominates:
-      z ≤ local_surface_z + WATER_TOL  →  WATER (1)
-      z >  local_surface_z + WATER_TOL →  LAND  (0)  [exposed rock / bank]
+    Inside the tight footprint — geometry dominates, but ensemble guards against
+    false positives where the footprint clips a riverbank or the surface grid is
+    slightly too high:
+      z ≤ local_surface_z + WATER_TOL AND ensemble ≠ land  →  WATER (1)
+      z ≤ local_surface_z + WATER_TOL AND ensemble = land  →  LAND  (0)
+      z >  local_surface_z + WATER_TOL                     →  LAND  (0)
 
     Outside the tight footprint — waveform model dominates:
       v6 says land (0)      →  LAND      (0)
@@ -529,8 +532,11 @@ def classify(feat_df, v6_df, in_footprint, local_surface_z, wf_ensemble):
     # ── Inside footprint ───────────────────────────────────────────────────────
     below_surf = in_footprint & (z_diff <= WATER_TOL)
     above_surf = in_footprint & (z_diff >  WATER_TOL)
-    merged[below_surf] = 1   # WATER
-    merged[above_surf] = 0   # LAND (above surface = rock / gravel / bank)
+    # Geometry wins for uncertain/water predictions; respect ML-confident land
+    # (gravel bars and clipped riverbanks that the footprint incorrectly includes).
+    merged[below_surf & (wf_ensemble != 0)] = 1   # WATER
+    merged[below_surf & (wf_ensemble == 0)] = 0   # LAND — ML confident, trust it
+    merged[above_surf] = 0                         # LAND (above surface = rock / bank)
 
     # ── Outside footprint ──────────────────────────────────────────────────────
     outside = ~in_footprint
@@ -540,9 +546,12 @@ def classify(feat_df, v6_df, in_footprint, local_surface_z, wf_ensemble):
 
     # ── Stats ──────────────────────────────────────────────────────────────────
     in_count = int(in_footprint.sum())
+    water_inside  = int((below_surf & (wf_ensemble != 0)).sum())
+    land_ml_guard = int((below_surf & (wf_ensemble == 0)).sum())
     print(f"\n  Inside footprint: {in_count:,}  ({100*in_footprint.mean():.1f}%)")
-    print(f"    z ≤ surface+{WATER_TOL}m  → water : {below_surf.sum():>8,}")
-    print(f"    z >  surface+{WATER_TOL}m → land  : {above_surf.sum():>8,}")
+    print(f"    z ≤ surface+{WATER_TOL}m, ensemble≠land → water : {water_inside:>8,}")
+    print(f"    z ≤ surface+{WATER_TOL}m, ensemble=land → land  : {land_ml_guard:>8,}")
+    print(f"    z >  surface+{WATER_TOL}m              → land  : {above_surf.sum():>8,}")
     print(f"  Outside footprint: {int(outside.sum()):,}")
     print(f"    v6=land     → land     : {int((outside&(wf_ensemble==0)).sum()):>8,}")
     print(f"    v6=water    → uncertain: {int((outside&(wf_ensemble==1)).sum()):>8,}")
@@ -856,8 +865,10 @@ def export_and_plot(feat_df, in_footprint, local_surface_z, merged_label,
     # Geometry override — three zones by z relative to the local water surface:
     #
     #  Zone A  z < local_surface_z           (clearly submerged)
-    #          Geometry wins unconditionally.  Recovers turbid water and
-    #          tree-over-water false negatives where ML says land/uncertain.
+    #          Geometry wins for uncertain/water ML predictions — recovers turbid
+    #          water and tree-over-water false negatives.
+    #          Exception: ML-confident land (ensemble==0) stays land — the footprint
+    #          may clip a riverbank, or the surface grid may be slightly high.
     #
     #  Zone B  local_surface_z ≤ z ≤ surface + WATER_TOL  (near-surface fringe)
     #          Geometry only resolves ML *uncertainty* (ensemble==2).
@@ -873,7 +884,7 @@ def export_and_plot(feat_df, in_footprint, local_surface_z, merged_label,
     geo_near_surf   = in_footprint & (z_diff >= 0.0) & (z_diff <= WATER_TOL)  # Zone B
     geo_above_surf  = in_footprint & (z_diff >  WATER_TOL)     # Zone C
 
-    ensemble[geo_submerged]                         = 1   # Zone A: always water
+    ensemble[geo_submerged  & (ensemble != 0)]      = 1   # Zone A: water unless ML confident land
     ensemble[geo_near_surf  & (ensemble == 2)]      = 1   # Zone B: resolve uncertainty only
     ensemble[geo_above_surf]                        = 0   # Zone C: exposed bank → land
 
@@ -958,20 +969,7 @@ def export_and_plot(feat_df, in_footprint, local_surface_z, merged_label,
 
     model_label = "v10 WCN+Geometry" if geometry_only else "v8 Surface Model"
 
-    # Contours from final geometry-corrected ensemble, not raw waveform proba.
-    # Raw waveform proba diverges from the scatter colours after geometry
-    # correction (footprint overrides, waterbed reconstruction), so contours
-    # built from it don't follow the displayed water class.
-    # Map: water=1 → 1.0, uncertain=2 → 0.5, land=0 → 0.0
-    ensemble_field = np.where(ensemble[nc] == 1, 1.0,
-                     np.where(ensemble[nc] == 2, 0.5, 0.0)).astype(np.float32)
-
-    print("\n  Computing river boundary contours for scatter …")
-    grid_raw, rb_x_min, rb_y_min, rb_n_x, rb_n_y = rasterize(x[nc], y[nc], ensemble_field)
-    grid_smooth = fill_and_smooth(grid_raw)
-    rb_contours = extract_contours(grid_smooth, rb_x_min, rb_y_min)
-
-    # 10 m padding so contours and footprint can extend past the scatter cloud
+    # 10 m padding so contours can extend past the scatter cloud
     PLOT_PAD = 10.0
     x_lo = float(x[nc].min()) - PLOT_PAD
     x_hi = float(x[nc].max()) + PLOT_PAD
@@ -989,13 +987,12 @@ def export_and_plot(feat_df, in_footprint, local_surface_z, merged_label,
             if not m.any(): continue
             ax.scatter(xs[m],ys[m],c=cm[lv],s=0.4,alpha=0.6,
                        label=f"{lm[lv]} ({m.sum():,})",rasterized=True)
-        # Tight footprint boundary
-        _plot_poly(ax, footprint_poly, color="k", lw=1.5, label="Tight footprint",
-                   fill=True, fill_color="steelblue", fill_alpha=0.10, zorder=6)
-        # Raw hull (before erosion)
-        _plot_poly(ax, raw_hull, color="grey", lw=0.8, linestyle="--",
-                   label="Raw hull (pre-erosion)", zorder=5)
-        # River boundary contours from ensemble labels
+        # Recalculate contours from this subplot's label array
+        # Map: water=1 → 1.0, uncertain=2 → 0.5, land=0 → 0.0
+        field = np.where(arr == 1, 1.0, np.where(arr == 2, 0.5, 0.0)).astype(np.float32)
+        grid_raw, rb_x_min, rb_y_min, _, _ = rasterize(x[nc], y[nc], field)
+        grid_smooth = fill_and_smooth(grid_raw)
+        rb_contours = extract_contours(grid_smooth, rb_x_min, rb_y_min)
         _draw_contours(ax, rb_contours)
         ax.set_aspect("equal", adjustable="box")
         ax.set_xlim(x_lo, x_hi)
@@ -1007,7 +1004,7 @@ def export_and_plot(feat_df, in_footprint, local_surface_z, merged_label,
         ax.legend(by_label.values(), by_label.keys(), markerscale=6, fontsize=7)
     plt.suptitle(
         f"{model_label} — Top-down view\n"
-        f"Contours from final ensemble: inner p={PROB_INNER} (white) · "
+        f"Contours per subplot: inner p={PROB_INNER} (white) · "
         f"center p={PROB_CENTER} (yellow) · outer p={PROB_OUTER} (orange)",
         fontsize=11,
     )
