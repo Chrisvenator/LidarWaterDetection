@@ -934,8 +934,8 @@ def export_and_plot(feat_df, in_footprint, local_surface_z, merged_label,
     out.to_csv(dest, index=False)
     print(f"\n  Saved {N:,} rows → {dest}")
 
-    cm = {0:"saddlebrown", 1:"steelblue", 2:"gold"}
-    lm = {0:"Land", 1:"Water", 2:"Uncertain"}
+    cm = {0:"saddlebrown", 1:"steelblue", 2:"gold", 3:"deepskyblue"}
+    lm = {0:"Land", 1:"Water", 2:"Uncertain", 3:"Recon-Water"}
 
     def _plot_poly(ax, geom, fill=False, fill_color=None, fill_alpha=0.12, **kwargs):
         """Plot a Polygon or MultiPolygon boundary on ax, optionally filled."""
@@ -976,20 +976,21 @@ def export_and_plot(feat_df, in_footprint, local_surface_z, merged_label,
     y_lo = float(y[nc].min()) - PLOT_PAD
     y_hi = float(y[nc].max()) + PLOT_PAD
 
+    _recon_nc = reconstructed_label[nc] if reconstructed_label is not None else merged_label[nc]
     fig, axes = plt.subplots(1,2,figsize=(22,9))
     for ax, (arr, title) in zip(axes, [
-        (merged_label[nc], f"Merged Labels — no canopy (z ≤ {CANOPY_Z_MAX}m)"),
-        (ensemble[nc],     f"{model_label} Ensemble — no canopy (z ≤ {CANOPY_Z_MAX}m)"),
+        (_recon_nc,    f"Reconstructed Labels — no canopy (z ≤ {CANOPY_Z_MAX}m)"),
+        (ensemble[nc], f"{model_label} Ensemble — no canopy (z ≤ {CANOPY_Z_MAX}m)"),
     ]):
         xs, ys = x[nc], y[nc]
-        for lv in [2,0,1]:
+        for lv in [2,0,1,3]:
             m = arr==lv
             if not m.any(): continue
             ax.scatter(xs[m],ys[m],c=cm[lv],s=0.4,alpha=0.6,
                        label=f"{lm[lv]} ({m.sum():,})",rasterized=True)
         # Recalculate contours from this subplot's label array
-        # Map: water=1 → 1.0, uncertain=2 → 0.5, land=0 → 0.0
-        field = np.where(arr == 1, 1.0, np.where(arr == 2, 0.5, 0.0)).astype(np.float32)
+        # Map: water=1|3 → 1.0, uncertain=2 → 0.5, land=0 → 0.0
+        field = np.where((arr == 1) | (arr == 3), 1.0, np.where(arr == 2, 0.5, 0.0)).astype(np.float32)
         grid_raw, rb_x_min, rb_y_min, _, _ = rasterize(x[nc], y[nc], field)
         grid_smooth = fill_and_smooth(grid_raw)
         rb_contours = extract_contours(grid_smooth, rb_x_min, rb_y_min)
@@ -1043,12 +1044,13 @@ def export_and_plot(feat_df, in_footprint, local_surface_z, merged_label,
     x_line = np.linspace(x.min(), x.max(), 300)
     z_surf_line = a_c*x_line + b_c*y_mid + c_c
 
+    _recon_arr = reconstructed_label if reconstructed_label is not None else merged_label
     fig, axes = plt.subplots(2,1,figsize=(18,11),sharex=True)
     for ax, (arr, title) in zip(axes,[
-        (merged_label,"Merged Labels"),
-        (ensemble,    "v8 Retrained Ensemble"),
+        (_recon_arr, "Reconstructed Labels"),
+        (ensemble,   "v8 Retrained Ensemble"),
     ]):
-        for lv in [2,0,1]:
+        for lv in [2,0,1,3]:
             m = sl&(arr==lv)
             if not m.any(): continue
             ax.scatter(x[m],z[m],c=cm[lv],s=2,alpha=0.75,
