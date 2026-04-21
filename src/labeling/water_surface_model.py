@@ -73,7 +73,7 @@ FOOTPRINT_CONF_SURFACE = 0.85   # higher threshold for tier-2 surface anchors
 RIVERBED_Z_MAX         = 259.6  # z < this = underwater / riverbed (v6 zone boundary)
 RIVERBED_Z_SURFACE_MAX = 261.5  # z < this for tier-2 surface water anchors
 HULL_RATIO             = 0.2    # concave_hull tightness  (lower = tighter)
-FOOTPRINT_EROSION      = 0.5    # erode inward by this many metres (conservative)
+FOOTPRINT_EROSION      = 1.0    # erode inward by this many metres (conservative)
 TIER2_MAX_DIST_FROM_T1 = 10.0   # max metres a tier-2 anchor may be from any tier-1 anchor
 
 # ── Local surface grid ─────────────────────────────────────────────────────────
@@ -100,10 +100,11 @@ BED_MAX_DIST      = 6.0   # metres: max dist from confirmed bed data → qualify
 BED_MARGIN        = 0.5   # z headroom below reconstructed bed (sensor noise / roughness)
 BED_PROBA_MIN     = 0.95  # WCN deep_proba threshold: high-conf water → bed anchor
                           # augments label==1 anchors with uncertain points v9 is sure about
-RECON_LABEL       = 3     # label value: reconstructed water (tree-over-water recovery)
-RECON_REFL_MAX    = -15.0 # reflectance ceiling: water << gravel at 532 nm green laser
-RECON_MIN_PEAKS   = 3     # n_peaks floor: only recover waveform-confused points
-                          # (simple waveforms at water z = gravel bar, not tree problem)
+RECON_LABEL         = 3     # label value: reconstructed water (tree-over-water recovery)
+RECON_REFL_MAX      = -15.0 # reflectance ceiling: water << gravel at 532 nm green laser
+RECON_MIN_PEAKS     = 3     # n_peaks floor: only recover waveform-confused points
+                            # (simple waveforms at water z = gravel bar, not tree problem)
+RECON_PLANARITY_MIN = 0.30  # water surface is planar; low-planarity returns = vegetation
 
 # ── Feature sets ──────────────────────────────────────────────────────────────
 WAVEFORM_FEATURES = [
@@ -323,6 +324,7 @@ def build_surface_grid(feat_df, v6_df, tier1_xy=None, geometry_only=False):
         t1_tree = None
 
     # ── Stamp primary estimates (skipping cells too far from tier-1 anchors) ──
+    primary_cell_mask = np.zeros((n_y, n_x), dtype=bool)
     n_primary_cells = 0
     n_skipped_cells = 0
     for flat_idx, sz in surf_primary.items():
@@ -337,6 +339,7 @@ def build_surface_grid(feat_df, v6_df, tier1_xy=None, geometry_only=False):
                     n_skipped_cells += 1
                     continue   # keep RANSAC plane value for this cell
             grid_z[iy, ix] = sz
+            primary_cell_mask[iy, ix] = True
             n_primary_cells += 1
 
     if n_skipped_cells > 0:
@@ -348,10 +351,27 @@ def build_surface_grid(feat_df, v6_df, tier1_xy=None, geometry_only=False):
 
     # ── Gaussian smooth ────────────────────────────────────────────────────────
     grid_z_smooth = gaussian_filter(grid_z, sigma=SMOOTH_SIGMA).astype(np.float32)
+
+    # Cap RANSAC-fallback cells only — Gaussian bleed from high primary-estimate
+    # cells can raise neighbouring RANSAC cells above the true surface. Primary
+    # cells have actual water-like returns, so their estimates are trusted as-is.
+    ransac_grid = (a * xc + b * yc + c).astype(np.float32)
+    max_rise = 0.15
+    cap_mask = ~primary_cell_mask
+    excess = np.where(cap_mask, grid_z_smooth - (ransac_grid + max_rise), 0.0)
+    n_capped = int((excess > 0).sum())
+    max_excess = float(excess.max())
+    print(f"  Upper cap on RANSAC cells (RANSAC+{max_rise}m): {n_capped} fallback cells capped, "
+          f"max excess = {max_excess:.4f} m")
+    grid_z_pre_cap = grid_z_smooth.copy()
+    grid_z_smooth = np.where(cap_mask,
+                             np.minimum(grid_z_smooth, ransac_grid + max_rise),
+                             grid_z_smooth)
+
     diff = np.abs(grid_z_smooth - grid_z)
     print(f"  Smoothing (σ={SMOOTH_SIGMA} cell): max Δz = {diff.max():.4f} m")
 
-    return grid_z_smooth, x_min, y_min, n_x, n_y, xi, yi, plane_coef
+    return grid_z_smooth, x_min, y_min, n_x, n_y, xi, yi, plane_coef, grid_z_pre_cap
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -467,6 +487,7 @@ def apply_waterbed_reconstruction(feat_df, merged_label, local_surface_z,
     z            = feat_df["z"].values
     reflectance  = feat_df["reflectance_dB"].values
     n_peaks      = feat_df["n_peaks"].values
+    planarity    = feat_df["planarity"].values
 
     # Dilate coverage: accept points within BED_MAX_DIST m of any data cell
     struct_r    = max(1, int(np.ceil(BED_MAX_DIST / CELL_SIZE)))
@@ -478,11 +499,14 @@ def apply_waterbed_reconstruction(feat_df, merged_label, local_surface_z,
     below_surface = z <= local_surface_z + WATER_TOL
     above_bed     = z >= local_bed - BED_MARGIN
     not_water     = merged_label != 1
-    water_like_refl = reflectance < RECON_REFL_MAX  # gravel is more reflective
-    waveform_confused = n_peaks >= RECON_MIN_PEAKS  # tree-over-water signature
+    water_like_refl   = reflectance < RECON_REFL_MAX   # gravel is more reflective
+    waveform_confused = n_peaks >= RECON_MIN_PEAKS      # tree-over-water signature
+    # Low planarity = non-planar return (vegetation, rough bank) — cannot be water surface
+    planar_surface    = planarity > RECON_PLANARITY_MIN
 
     reconstructed = (not_water & below_surface & near_bed & above_bed
-                     & water_like_refl & waveform_confused)
+                     & water_like_refl & waveform_confused
+                     & planar_surface)
 
     new_labels = merged_label.copy()
     new_labels[reconstructed] = RECON_LABEL
@@ -493,7 +517,8 @@ def apply_waterbed_reconstruction(feat_df, merged_label, local_surface_z,
     print(f"    Criteria: near_bed={int(near_bed.sum()):,}  "
           f"below_surface={int(below_surface.sum()):,}  "
           f"water_refl={int(water_like_refl.sum()):,}  "
-          f"complex_wf={int(waveform_confused.sum()):,}")
+          f"complex_wf={int(waveform_confused.sum()):,}  "
+          f"planar={int(planar_surface.sum()):,}")
     for old_lv, nm in [(0, "land"), (2, "uncertain")]:
         n = int((reconstructed & (merged_label == old_lv)).sum())
         print(f"    From {nm}: {n:,}")
@@ -530,13 +555,21 @@ def classify(feat_df, v6_df, in_footprint, local_surface_z, wf_ensemble):
     merged = np.full(N, 2, dtype=np.int8)
 
     # ── Inside footprint ───────────────────────────────────────────────────────
-    below_surf = in_footprint & (z_diff <= WATER_TOL)
-    above_surf = in_footprint & (z_diff >  WATER_TOL)
-    # Geometry wins for uncertain/water predictions; respect ML-confident land
-    # (gravel bars and clipped riverbanks that the footprint incorrectly includes).
-    merged[below_surf & (wf_ensemble != 0)] = 1   # WATER
-    merged[below_surf & (wf_ensemble == 0)] = 0   # LAND — ML confident, trust it
-    merged[above_surf] = 0                         # LAND (above surface = rock / bank)
+    submerged    = in_footprint & (z_diff <  0.0)
+    near_surface = in_footprint & (z_diff >= 0.0) & (z_diff <= WATER_TOL)
+    above_surf   = in_footprint & (z_diff >  WATER_TOL)
+
+    # Submerged zone: geometry dominates — any non-confident-land → water
+    merged[submerged & (wf_ensemble != 0)] = 1
+    merged[submerged & (wf_ensemble == 0)] = 0
+
+    # Near-surface margin: require ML water — flowing river surface estimate may
+    # be 0.1–0.2 m off; uncertain waveforms in this margin = likely leaves or bank
+    merged[near_surface & (wf_ensemble == 1)] = 1
+    merged[near_surface & (wf_ensemble == 0)] = 0
+    merged[near_surface & (wf_ensemble == 2)] = 2   # keep uncertain
+
+    merged[above_surf] = 0  # LAND (above surface = rock / bank)
 
     # ── Outside footprint ──────────────────────────────────────────────────────
     outside = ~in_footprint
@@ -546,11 +579,12 @@ def classify(feat_df, v6_df, in_footprint, local_surface_z, wf_ensemble):
 
     # ── Stats ──────────────────────────────────────────────────────────────────
     in_count = int(in_footprint.sum())
-    water_inside  = int((below_surf & (wf_ensemble != 0)).sum())
-    land_ml_guard = int((below_surf & (wf_ensemble == 0)).sum())
     print(f"\n  Inside footprint: {in_count:,}  ({100*in_footprint.mean():.1f}%)")
-    print(f"    z ≤ surface+{WATER_TOL}m, ensemble≠land → water : {water_inside:>8,}")
-    print(f"    z ≤ surface+{WATER_TOL}m, ensemble=land → land  : {land_ml_guard:>8,}")
+    print(f"    z < surface      , ensemble≠land → water : {int((submerged & (wf_ensemble != 0)).sum()):>8,}")
+    print(f"    z < surface      , ensemble=land → land  : {int((submerged & (wf_ensemble == 0)).sum()):>8,}")
+    print(f"    z ∈ [surf,surf+{WATER_TOL}], ensemble=water→ water : {int((near_surface & (wf_ensemble == 1)).sum()):>8,}")
+    print(f"    z ∈ [surf,surf+{WATER_TOL}], ensemble=land → land  : {int((near_surface & (wf_ensemble == 0)).sum()):>8,}")
+    print(f"    z ∈ [surf,surf+{WATER_TOL}], uncertain   → uncert : {int((near_surface & (wf_ensemble == 2)).sum()):>8,}")
     print(f"    z >  surface+{WATER_TOL}m              → land  : {above_surf.sum():>8,}")
     print(f"  Outside footprint: {int(outside.sum()):,}")
     print(f"    v6=land     → land     : {int((outside&(wf_ensemble==0)).sum()):>8,}")
@@ -862,33 +896,9 @@ def export_and_plot(feat_df, in_footprint, local_surface_z, merged_label,
     agree     = xgb_pred == deep_pred
     ensemble  = xgb_pred.copy(); ensemble[~agree] = 2
 
-    # Geometry override — three zones by z relative to the local water surface:
-    #
-    #  Zone A  z < local_surface_z           (clearly submerged)
-    #          Geometry wins for uncertain/water ML predictions — recovers turbid
-    #          water and tree-over-water false negatives.
-    #          Exception: ML-confident land (ensemble==0) stays land — the footprint
-    #          may clip a riverbank, or the surface grid may be slightly high.
-    #
-    #  Zone B  local_surface_z ≤ z ≤ surface + WATER_TOL  (near-surface fringe)
-    #          Geometry only resolves ML *uncertainty* (ensemble==2).
-    #          Confident ML land stays land — gravel bars at the water line have
-    #          compact waveforms that the geometry surface grid can't distinguish
-    #          from open water; let the ML discriminate.
-    #
-    #  Zone C  z > local_surface_z + WATER_TOL  (above surface, inside footprint)
-    #          Geometry wins: exposed rock / gravel bank → land.
-    z_diff = z - local_surface_z
+    z_diff = z - local_surface_z  # kept for CSV z_above_surface column
 
-    geo_submerged   = in_footprint & (z_diff <  0.0)           # Zone A
-    geo_near_surf   = in_footprint & (z_diff >= 0.0) & (z_diff <= WATER_TOL)  # Zone B
-    geo_above_surf  = in_footprint & (z_diff >  WATER_TOL)     # Zone C
-
-    ensemble[geo_submerged  & (ensemble != 0)]      = 1   # Zone A: water unless ML confident land
-    ensemble[geo_near_surf  & (ensemble == 2)]      = 1   # Zone B: resolve uncertainty only
-    ensemble[geo_above_surf]                        = 0   # Zone C: exposed bank → land
-
-    # Waterbed reconstruction always wins — geometry recovered these points explicitly.
+    # Waterbed reconstruction always wins — bed geometry confirmed these points.
     if reconstructed_label is not None:
         ensemble[reconstructed_label == 3] = 1
 
@@ -899,7 +909,7 @@ def export_and_plot(feat_df, in_footprint, local_surface_z, merged_label,
           f"land={int((deep_pred==0).sum()):,}")
     print(f"    Agreement: {100*agree.mean():.1f}%  "
           f"({int((~agree).sum()):,} uncertain)")
-    print(f"    After geometry override + waterbed reconstruction:")
+    print(f"    After waterbed reconstruction:")
     for lv,nm in [(0,"land"),(1,"water"),(2,"uncertain")]:
         n=int((ensemble==lv).sum())
         print(f"    Ensemble {lv} ({nm}): {n:,}  ({100*n/N:.1f}%)")
@@ -976,7 +986,7 @@ def export_and_plot(feat_df, in_footprint, local_surface_z, merged_label,
     y_lo = float(y[nc].min()) - PLOT_PAD
     y_hi = float(y[nc].max()) + PLOT_PAD
 
-    _recon_nc = reconstructed_label[nc] if reconstructed_label is not None else merged_label[nc]
+    _recon_nc = _recon_out[nc]
     fig, axes = plt.subplots(1,2,figsize=(22,9))
     for ax, (arr, title) in zip(axes, [
         (_recon_nc,    f"Reconstructed Labels — no canopy (z ≤ {CANOPY_Z_MAX}m)"),
@@ -1203,12 +1213,27 @@ def main():
     print(f"\n{'='*60}")
     print("PHASE 2 — LOCAL ADAPTIVE SURFACE GRID")
     print(f"{'='*60}")
-    grid_z, x_min, y_min, n_x, n_y, xi, yi, plane_coef = \
+    grid_z, x_min, y_min, n_x, n_y, xi, yi, plane_coef, grid_z_pre_cap = \
         build_surface_grid(feat_df, v6_df, tier1_xy=tier1_xy,
                            geometry_only=args.geometry_only)
 
     # Look up per-point local surface elevation
-    local_surface_z = grid_z[yi, xi].astype(np.float32)
+    local_surface_z     = grid_z[yi, xi].astype(np.float32)
+    local_surface_z_pre = grid_z_pre_cap[yi, xi].astype(np.float32)
+
+    # Diagnostic: how much did the upper cap change local_surface_z for in-footprint points?
+    cap_delta = local_surface_z_pre - local_surface_z   # positive = cap lowered the surface
+    fp_changed = in_footprint & (cap_delta > 1e-5)
+    print(f"\n  Surface cap diagnostic (in-footprint):")
+    print(f"    Points whose local_surface_z was lowered: {fp_changed.sum():,} / {in_footprint.sum():,}")
+    if fp_changed.sum() > 0:
+        d = cap_delta[fp_changed]
+        print(f"    Lowered by: min={d.min():.4f}  max={d.max():.4f}  mean={d.mean():.4f} m")
+        z_fp      = feat_df["z"].values[fp_changed]
+        s_post    = local_surface_z[fp_changed]
+        s_pre     = local_surface_z_pre[fp_changed]
+        flipped   = (z_fp < s_pre) & (z_fp >= s_post - WATER_TOL)
+        print(f"    Points that flipped submerged→above-surface after cap: {flipped.sum():,}")
 
     # ── Phase 3 ────────────────────────────────────────────────────────────────
     print(f"\n{'='*60}")
