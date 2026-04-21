@@ -3,7 +3,7 @@ water_surface_model_v2.py — Tight footprint + local adaptive surface grid (v8)
 
 Fixes four problems from v7:
   1. Footprint too large  → tighter concave hull from high-conf (>0.8) RIVERBED
-     points only (z < 259.6m), eroded inward by 0.5m.
+     points only (z < 259.6m), eroded inward by 1.0m.
   2. One plane can't fit a bumpy/tilted surface  → 2m-cell local surface grid,
      estimated from water-like waveforms per cell, fallback to RANSAC global
      plane, Gaussian-smoothed.
@@ -245,9 +245,13 @@ def build_surface_grid(feat_df, v6_df, tier1_xy=None, geometry_only=False):
 
     Returns
     -------
-    grid_z   : 2D float32 array (n_y, n_x) — smoothed surface elevation
-    x_min, y_min, n_x, n_y : grid origin and dimensions
-    plane_coef : (a, b, c) from RANSAC fit
+    grid_z         : 2D float32 array (n_y, n_x) — smoothed, capped surface elevation
+    x_min, y_min   : float — grid origin (SW corner)
+    n_x, n_y       : int — grid dimensions (columns, rows)
+    xi, yi         : 1D int arrays (N,) — per-point cell indices into the grid
+    plane_coef     : (a, b, c) — RANSAC plane coefficients
+    grid_z_pre_cap : 2D float32 array (n_y, n_x) — Gaussian-smoothed surface before
+                     the RANSAC-fallback upper cap is applied (diagnostic only)
     """
     x_all = feat_df["x"].values
     y_all = feat_df["y"].values
@@ -368,8 +372,9 @@ def build_surface_grid(feat_df, v6_df, tier1_xy=None, geometry_only=False):
                              np.minimum(grid_z_smooth, ransac_grid + max_rise),
                              grid_z_smooth)
 
-    diff = np.abs(grid_z_smooth - grid_z)
-    print(f"  Smoothing (σ={SMOOTH_SIGMA} cell): max Δz = {diff.max():.4f} m")
+    # Measure smoothing-only delta before the upper cap is applied
+    diff = np.abs(grid_z_pre_cap - grid_z)
+    print(f"  Smoothing (σ={SMOOTH_SIGMA} cell): max Δz = {diff.max():.4f} m  (pre-cap)")
 
     return grid_z_smooth, x_min, y_min, n_x, n_y, xi, yi, plane_coef, grid_z_pre_cap
 
@@ -487,7 +492,6 @@ def apply_waterbed_reconstruction(feat_df, merged_label, local_surface_z,
     z            = feat_df["z"].values
     reflectance  = feat_df["reflectance_dB"].values
     n_peaks      = feat_df["n_peaks"].values
-    planarity    = feat_df["planarity"].values
 
     # Dilate coverage: accept points within BED_MAX_DIST m of any data cell
     struct_r    = max(1, int(np.ceil(BED_MAX_DIST / CELL_SIZE)))
@@ -502,7 +506,10 @@ def apply_waterbed_reconstruction(feat_df, merged_label, local_surface_z,
     water_like_refl   = reflectance < RECON_REFL_MAX   # gravel is more reflective
     waveform_confused = n_peaks >= RECON_MIN_PEAKS      # tree-over-water signature
     # Low planarity = non-planar return (vegetation, rough bank) — cannot be water surface
-    planar_surface    = planarity > RECON_PLANARITY_MIN
+    if "planarity" in feat_df.columns:
+        planar_surface = feat_df["planarity"].values > RECON_PLANARITY_MIN
+    else:
+        planar_surface = np.ones(len(feat_df), dtype=bool)
 
     reconstructed = (not_water & below_surface & near_bed & above_bed
                      & water_like_refl & waveform_confused
@@ -534,12 +541,16 @@ def classify(feat_df, v6_df, in_footprint, local_surface_z, wf_ensemble):
     """
     Apply the water-surface model and merge with v6 waveform predictions.
 
-    Inside the tight footprint — geometry dominates, but ensemble guards against
-    false positives where the footprint clips a riverbank or the surface grid is
-    slightly too high:
-      z ≤ local_surface_z + WATER_TOL AND ensemble ≠ land  →  WATER (1)
-      z ≤ local_surface_z + WATER_TOL AND ensemble = land  →  LAND  (0)
-      z >  local_surface_z + WATER_TOL                     →  LAND  (0)
+    Inside the tight footprint — geometry and ensemble interact:
+      Submerged (z < local_surface_z):
+        ensemble ≠ land  →  WATER (1)
+        ensemble = land  →  LAND  (0)   [waveform disagrees — trust it]
+      Near-surface margin (z ∈ [surface, surface + WATER_TOL]):
+        ensemble = water (1)     →  WATER     (1)
+        ensemble = land  (0)     →  LAND      (0)
+        ensemble = uncertain (2) →  UNCERTAIN (2)  [flowing surface ±0.1–0.2 m off]
+      Above surface (z > surface + WATER_TOL):
+        →  LAND (0)
 
     Outside the tight footprint — waveform model dominates:
       v6 says land (0)      →  LAND      (0)
