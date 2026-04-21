@@ -933,7 +933,7 @@ def export_and_plot(feat_df, in_footprint, local_surface_z, merged_label,
     if reconstructed_label is not None:
         _recon_out[reconstructed_label == 3] = 3
     out = pd.DataFrame({
-        "x":x,"y":y,"z":z,
+        "X":x,"Y":y,"Z":z,
         "reflectance_dB": feat_df["reflectance_dB"].values
                           if "reflectance_dB" in feat_df.columns else 0.,
         "in_footprint":   in_footprint.astype(np.int8),
@@ -951,6 +951,13 @@ def export_and_plot(feat_df, in_footprint, local_surface_z, merged_label,
                 "z_relative","amplitude_weighted_center"]:
         if col in feat_df.columns:
             out[col] = feat_df[col].values
+    out = out[[
+        "X","Y","Z","reflectance_dB","reconstructed_label","merged_label","ensemble",
+        "xgb_pred","deep_pred","in_footprint","local_surface_z","z_above_surface",
+        "height_above_local_min","height_percentile_local","z_relative","planarity",
+        "roughness","n_peaks","energy_concentration","max_amp_norm_by_energy",
+        "depth_proxy_m","amplitude_weighted_center","xgb_proba","deep_proba",
+    ]]
     dest = out_path or OUT_PATH
     out.to_csv(dest, index=False)
     print(f"\n  Saved {N:,} rows → {dest}")
