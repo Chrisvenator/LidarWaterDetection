@@ -343,10 +343,12 @@ def isolated_water(x: np.ndarray, y: np.ndarray, labels: np.ndarray) -> np.ndarr
     blob via nearest-neighbour fill (one bogus label-3 point did exactly that).
     """
     water = np.isin(labels, (1, 3))
+    out = np.zeros(len(labels), bool)
+    if not water.any():
+        return out
     xy = np.column_stack([x[water], y[water]])
     support = cKDTree(xy).query_ball_point(xy, ISOLATION_RADIUS_M, workers=-1,
                                            return_length=True)
-    out = np.zeros(len(labels), bool)
     out[np.flatnonzero(water)[support < MIN_WATER_SUPPORT]] = True
     if out.any():
         print(f"  Dropped {int(out.sum())} isolated water points "
@@ -400,6 +402,9 @@ def main():
     # canopy/stray points carry no water evidence — their cells are bridged by fill
     final_mode = tag.startswith("final")
     keep = use if final_mode else np.ones(len(x), bool)
+    if not keep.any():
+        raise ValueError("no evidence points left after canopy/stray filtering — "
+                         "check the input cloud's final_label values")
 
     print("\nStep 1 — Rasterizing …")
     grid_raw, x_min, y_min, n_x, n_y = rasterize(x[keep], y[keep], evidence[keep])
