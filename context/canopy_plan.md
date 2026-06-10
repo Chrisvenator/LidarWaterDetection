@@ -78,6 +78,23 @@ resolved). Final classes in labeled_pointcloud_final.csv:
 0=land 33,934 | 1=water 48,459 | 2=uncertain 5,570 | 3=water-under-canopy 3,548 |
 4=canopy 142,513. CLAUDE.md pipeline section updated (Stages 5 and 6).
 
+## Stage 7 — canopy-aware river boundary (June 2026)
+
+`river_boundary.py` gained `--input/--out-dir` and a schema-aware loader:
+with `labeled_pointcloud_final.csv` it builds the evidence field from labels
+(water/recon-water = 1.0, land = 0.0, uncertain = deep_proba) and EXCLUDES
+canopy points — they say nothing about water below; their cells are bridged
+by the nearest-neighbour fill. Output: `models/final/boundary.geojson`
+(inner 0.65 / center 0.50 / outer 0.35 contours) + heatmap/scatter plots.
+Default invocation (WCN mode) unchanged — v8/v10 imports untouched.
+
+**Phantom-blob guards** (final mode only): a single stray label-3 point at the
+survey fringe (z 257.6, proba 0.07, 4 m from the channel) seeded a 5×6 m phantom
+water blob via nearest-neighbour fill. Two guards: (1) isolated-water filter —
+water-evidence points need ≥5 water neighbors within 3 m (dropped 18);
+(2) distance-limited fill — cells >3 m from data stay NaN, contours cannot
+enter no-data margins (masked 360 cells).
+
 ## Status
 
 - [x] Context read, z bands verified, pulse grouping confirmed feasible

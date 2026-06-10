@@ -20,15 +20,24 @@ wide band means the edge is gradual (gravel bar, shallow margin).
 
 Run
 ---
-    python src/labeling/river_boundary.py
+    python src/labeling/river_boundary.py                       # WCN v9 probas
+    python src/labeling/river_boundary.py \
+        --input pointclouds/labeled_pointcloud_final.csv \
+        --out-dir models/final                                  # canopy-aware
 
-Outputs  (models/wcn_v9/)
+With the final merged cloud, canopy points (label 4) are excluded as evidence —
+they say nothing about the water below — and the gaps they leave are bridged by
+nearest-neighbour fill. Water evidence: water/recon-water = 1.0, land = 0.0,
+uncertain = deep_proba.
+
+Outputs  (out dir)
 --------
   boundary_heatmap.png     probability field + contour lines (diagnostic)
   boundary_nocanopy.png    no-canopy scatter with contour overlay
   boundary.geojson         all three contours as GeoJSON LineStrings
 """
 
+import argparse
 import json
 import warnings
 from pathlib import Path
@@ -39,6 +48,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from scipy.ndimage import gaussian_filter, distance_transform_edt
+from scipy.spatial import cKDTree
 
 ROOT      = Path(__file__).resolve().parent.parent.parent
 INPUT_CSV = ROOT / "pointclouds" / "labeled_pointcloud_wcn.csv"
@@ -54,6 +64,11 @@ PROB_OUTER  = 0.35   # generous outer boundary
 
 MIN_SEG_LEN  = 20    # discard contour segments shorter than this many points
 MAX_CONTOURS =  3    # keep at most this many segments per level (largest first)
+
+# final-cloud mode guards against phantom blobs at the survey fringe
+MAX_FILL_DIST_M     = 3.0  # cells farther than this from data stay NaN (no contour)
+ISOLATION_RADIUS_M  = 3.0  # water point needs water neighbors within this radius …
+MIN_WATER_SUPPORT   = 5    # … at least this many (incl. itself) to count as evidence
 
 CANOPY_Z_MAX = 268.0  # z > this = canopy (CLAUDE.md)
 
@@ -98,23 +113,31 @@ def rasterize(x: np.ndarray, y: np.ndarray, proba: np.ndarray):
 # STEP 2 — FILL EMPTY CELLS + SMOOTH
 # ══════════════════════════════════════════════════════════════════════════════
 
-def fill_and_smooth(grid: np.ndarray) -> np.ndarray:
+def fill_and_smooth(grid: np.ndarray, max_dist_m: float | None = None) -> np.ndarray:
     """
     Fill NaN cells via nearest-neighbour propagation from valid cells,
     then apply Gaussian smoothing.
+
+    max_dist_m: if set, cells farther than this from any data cell are reset
+    to NaN after smoothing, so contours cannot wander into no-data margins.
     """
     nan_mask = np.isnan(grid)
     if nan_mask.any():
-        _, nearest = distance_transform_edt(nan_mask, return_indices=True)
+        dist, nearest = distance_transform_edt(nan_mask, return_indices=True)
         filled = grid.copy()
         filled[nan_mask] = grid[nearest[0][nan_mask], nearest[1][nan_mask]]
     else:
+        dist = np.zeros_like(grid)
         filled = grid
 
     sigma_cells = SMOOTH_SIGMA / CELL_SIZE
     smoothed = gaussian_filter(filled.astype(np.float32), sigma=sigma_cells)
+    if max_dist_m is not None:
+        far = dist * CELL_SIZE > max_dist_m
+        smoothed[far] = np.nan
+        print(f"  Masked {int(far.sum()):,} cells farther than {max_dist_m}m from data")
     print(f"  Smoothed with σ={SMOOTH_SIGMA}m ({sigma_cells:.1f} cells)  "
-          f"proba range: [{smoothed.min():.3f}, {smoothed.max():.3f}]")
+          f"proba range: [{np.nanmin(smoothed):.3f}, {np.nanmax(smoothed):.3f}]")
     return smoothed
 
 
@@ -220,14 +243,12 @@ def plot_heatmap(grid: np.ndarray, x_min: float, y_min: float,
     print(f"  Saved → {p}")
 
 
-def plot_scatter(x: np.ndarray, y: np.ndarray, z: np.ndarray,
-                 ensemble: np.ndarray, contours: dict,
-                 out_dir: Path) -> None:
+def plot_scatter(x: np.ndarray, y: np.ndarray, nc: np.ndarray,
+                 labels: np.ndarray, contours: dict,
+                 out_dir: Path, tag: str) -> None:
     """No-canopy scatter plot with contour overlay (two panels: full + zoomed)."""
-    cmap = {0: "saddlebrown", 1: "steelblue", 2: "gold"}
-    lmap = {0: "Land", 1: "Water", 2: "Uncertain"}
-
-    nc = z <= CANOPY_Z_MAX
+    cmap = {0: "saddlebrown", 1: "steelblue", 2: "gold", 3: "navy"}
+    lmap = {0: "Land", 1: "Water", 2: "Uncertain", 3: "Water under canopy"}
 
     # Bounding box of outer contour for zoom panel
     outer_segs = contours.get(PROB_OUTER, [])
@@ -242,12 +263,12 @@ def plot_scatter(x: np.ndarray, y: np.ndarray, z: np.ndarray,
     fig, axes = plt.subplots(1, 2, figsize=(22, 9))
 
     for ax, apply_zoom, title in [
-        (axes[0], False, f"WCN v9 — no canopy  (z ≤ {CANOPY_Z_MAX}m)"),
-        (axes[1], True,  f"WCN v9 — river boundary zone"),
+        (axes[0], False, f"{tag} — no canopy"),
+        (axes[1], True,  f"{tag} — river boundary zone"),
     ]:
         xs, ys = x[nc], y[nc]
-        ps     = ensemble[nc]
-        for lv in [0, 1, 2]:
+        ps     = labels[nc]
+        for lv in [0, 1, 2, 3]:
             m = ps == lv
             if m.any():
                 ax.scatter(xs[m], ys[m], s=0.5, c=cmap[lv],
@@ -259,9 +280,9 @@ def plot_scatter(x: np.ndarray, y: np.ndarray, z: np.ndarray,
         if apply_zoom and zoom_xlim:
             ax.set_xlim(*zoom_xlim); ax.set_ylim(*zoom_ylim)
 
-        # Deduplicate legend
-        handles, labels = ax.get_legend_handles_labels()
-        by_label = dict(zip(labels, handles))
+        # Deduplicate legend (NB: don't shadow the labels parameter)
+        handles, leg_labels = ax.get_legend_handles_labels()
+        by_label = dict(zip(leg_labels, handles))
         ax.legend(by_label.values(), by_label.keys(),
                   markerscale=10, loc="upper right", fontsize=7)
 
@@ -315,44 +336,92 @@ def save_geojson(contours: dict, out_dir: Path) -> None:
 # MAIN
 # ══════════════════════════════════════════════════════════════════════════════
 
+def isolated_water(x: np.ndarray, y: np.ndarray, labels: np.ndarray) -> np.ndarray:
+    """Water points without enough water neighbors — reconstruction strays.
+
+    A lone water-evidence point at the survey fringe otherwise seeds a phantom
+    blob via nearest-neighbour fill (one bogus label-3 point did exactly that).
+    """
+    water = np.isin(labels, (1, 3))
+    out = np.zeros(len(labels), bool)
+    if not water.any():
+        return out
+    xy = np.column_stack([x[water], y[water]])
+    support = cKDTree(xy).query_ball_point(xy, ISOLATION_RADIUS_M, workers=-1,
+                                           return_length=True)
+    out[np.flatnonzero(water)[support < MIN_WATER_SUPPORT]] = True
+    if out.any():
+        print(f"  Dropped {int(out.sum())} isolated water points "
+              f"(<{MIN_WATER_SUPPORT} water neighbors within {ISOLATION_RADIUS_M}m)")
+    return out
+
+
+def load_evidence(path: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray,
+                                       np.ndarray, np.ndarray, str]:
+    """Return x, y, water evidence, class labels, evidence mask, plot tag.
+
+    Final merged cloud: canopy and isolated water strays are masked out of the
+    evidence; water/recon-water = 1.0, land = 0.0, uncertain keeps its
+    deep_proba. WCN cloud: original behavior (wcn_proba, z-based canopy).
+    """
+    if "final_label" in pd.read_csv(path, nrows=0).columns:
+        df = pd.read_csv(path, usecols=["X", "Y", "final_label", "deep_proba"])
+        labels = df["final_label"].to_numpy(np.int8)
+        evidence = np.select([np.isin(labels, (1, 3)), labels == 0],
+                             [1.0, 0.0], default=df["deep_proba"].to_numpy())
+        use = (labels != 4) & ~isolated_water(
+            df["X"].to_numpy(), df["Y"].to_numpy(), labels)
+        return (df["X"].to_numpy(), df["Y"].to_numpy(), evidence, labels,
+                use, "final (v10 + canopy)")
+    df = pd.read_csv(path, usecols=["x", "y", "z", "wcn_proba", "ensemble"])
+    return (df["x"].to_numpy(), df["y"].to_numpy(),
+            df["wcn_proba"].to_numpy(), df["ensemble"].to_numpy(np.int8),
+            (df["z"] <= CANOPY_Z_MAX).to_numpy(), "WCN v9")
+
+
 def main():
+    ap = argparse.ArgumentParser(description="River boundary from proba contours")
+    ap.add_argument("--input", type=Path, default=INPUT_CSV)
+    ap.add_argument("--out-dir", type=Path, default=OUT_DIR)
+    args = ap.parse_args()
+    args.out_dir.mkdir(parents=True, exist_ok=True)
+
     print("=" * 60)
-    print("River Boundary Detection — WCN v9")
+    print(f"River Boundary Detection — {args.input.name}")
     print(f"  cell={CELL_SIZE}m  σ={SMOOTH_SIGMA}m  "
           f"levels={PROB_INNER}/{PROB_CENTER}/{PROB_OUTER}")
     print("=" * 60)
 
-    if not INPUT_CSV.exists():
-        raise FileNotFoundError(f"{INPUT_CSV}\nRun train_wcn_v9.py first.")
+    if not args.input.exists():
+        raise FileNotFoundError(args.input)
 
-    print(f"\nLoading {INPUT_CSV.name} …")
-    df = pd.read_csv(INPUT_CSV, usecols=["x", "y", "z", "wcn_proba", "ensemble"])
-    print(f"  {len(df):,} points  "
-          f"land={int((df.ensemble==0).sum()):,}  "
-          f"water={int((df.ensemble==1).sum()):,}  "
-          f"uncertain={int((df.ensemble==2).sum()):,}")
+    x, y, evidence, labels, use, tag = load_evidence(args.input)
+    counts = {v: int((labels == v).sum()) for v in np.unique(labels)}
+    print(f"  {len(x):,} points  labels={counts}")
 
-    x        = df["x"].values
-    y        = df["y"].values
-    z        = df["z"].values
-    proba    = df["wcn_proba"].values
-    ensemble = df["ensemble"].values.astype(np.int8)
+    # canopy/stray points carry no water evidence — their cells are bridged by fill
+    final_mode = tag.startswith("final")
+    keep = use if final_mode else np.ones(len(x), bool)
+    if not keep.any():
+        raise ValueError("no evidence points left after canopy/stray filtering — "
+                         "check the input cloud's final_label values")
 
     print("\nStep 1 — Rasterizing …")
-    grid_raw, x_min, y_min, n_x, n_y = rasterize(x, y, proba)
+    grid_raw, x_min, y_min, n_x, n_y = rasterize(x[keep], y[keep], evidence[keep])
 
     print("\nStep 2 — Filling + smoothing …")
-    grid_smooth = fill_and_smooth(grid_raw)
+    grid_smooth = fill_and_smooth(grid_raw,
+                                  max_dist_m=MAX_FILL_DIST_M if final_mode else None)
 
     print("\nStep 3 — Extracting contours …")
     contours = extract_contours(grid_smooth, x_min, y_min)
 
     print("\nStep 4 — Plotting …")
-    plot_heatmap(grid_smooth, x_min, y_min, contours, OUT_DIR)
-    plot_scatter(x, y, z, ensemble, contours, OUT_DIR)
+    plot_heatmap(grid_smooth, x_min, y_min, contours, args.out_dir)
+    plot_scatter(x, y, use, labels, contours, args.out_dir, tag)
 
     print("\nStep 5 — Saving GeoJSON …")
-    save_geojson(contours, OUT_DIR)
+    save_geojson(contours, args.out_dir)
 
     print("\nDone.")
 
