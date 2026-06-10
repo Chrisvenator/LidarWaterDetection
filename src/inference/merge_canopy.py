@@ -14,6 +14,7 @@ Output: pointclouds/labeled_pointcloud_final.csv (open in CloudCompare)
 
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 ROOT = Path(__file__).resolve().parent.parent.parent
@@ -26,8 +27,10 @@ LABEL_LAND, LABEL_WATER, LABEL_UNCERTAIN, LABEL_RECON_WATER, LABEL_CANOPY = 0, 1
 
 def main() -> None:
     v10 = pd.read_csv(V10_PATH)
-    canopy = pd.read_csv(CANOPY_PATH, usecols=["X", "canopy_proba", "canopy_pred"])
-    if len(v10) != len(canopy) or not v10["X"].equals(canopy["X"]):
+    canopy = pd.read_csv(CANOPY_PATH,
+                         usecols=["X", "Y", "Z", "canopy_proba", "canopy_pred"])
+    if len(v10) != len(canopy) or not np.allclose(
+            v10[["X", "Y", "Z"]].to_numpy(), canopy[["X", "Y", "Z"]].to_numpy()):
         raise ValueError("v10 and canopy clouds are not row-aligned")
 
     final = v10["reconstructed_label"].copy()

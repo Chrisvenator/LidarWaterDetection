@@ -183,8 +183,11 @@ def export_cloud(df: pd.DataFrame, proba: np.ndarray, pred: np.ndarray,
 def main() -> None:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     df = pd.read_csv(FEATURES_PATH)
-    v10 = pd.read_csv(V10_PATH,
-                      usecols=["merged_label", "in_footprint", "z_above_surface"])
+    v10 = pd.read_csv(V10_PATH, usecols=["X", "Y", "Z", "merged_label",
+                                         "in_footprint", "z_above_surface"])
+    if not np.allclose(v10[["X", "Y", "Z"]].to_numpy(),
+                       df[["x", "y", "z"]].to_numpy()):
+        raise ValueError("labeled_pointcloud_v10.csv row order mismatch with features")
     labels = make_labels(df, v10)
     feat_names = [c for c in df.columns if c not in NON_FEATURES]
     X = df[feat_names]

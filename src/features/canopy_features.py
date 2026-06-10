@@ -10,6 +10,7 @@ Output: data_processed/canopy_features.csv (cached — delete or --force to rebu
 from __future__ import annotations
 
 import csv
+import hashlib
 import sys
 from pathlib import Path
 
@@ -42,15 +43,20 @@ EXISTING_COLS = [
 
 
 def load_pulse_ids(n_expected: int) -> np.ndarray:
-    """Hash each waveform row; identical rows = echoes of the same pulse."""
+    """Hash each waveform row; identical rows = echoes of the same pulse.
+
+    blake2b instead of built-in hash(): stable across processes (no
+    PYTHONHASHSEED randomization) and collision-safe at 128 bits.
+    """
     csv.field_size_limit(sys.maxsize)
     pulse_ids = np.empty(n_expected, dtype=np.int64)
-    seen: dict[int, int] = {}
+    seen: dict[bytes, int] = {}
     with open(WAVEFORM_PATH, newline="") as f:
         reader = csv.reader(f)
         next(reader)
         for i, row in enumerate(reader):
-            h = hash((row[1], row[2]))
+            h = hashlib.blake2b(f"{row[1]}|{row[2]}".encode(),
+                                digest_size=16).digest()
             pulse_ids[i] = seen.setdefault(h, len(seen))
     if i + 1 != n_expected:
         raise ValueError(f"waveform rows {i + 1} != point rows {n_expected}")
@@ -190,10 +196,11 @@ def main() -> None:
     grids = build_grids(df, echo, load_water_surface())
     struct = structure_features(df)
 
-    existing = pd.read_csv(FEATURES_IN_PATH, usecols=["x", *EXISTING_COLS])
-    if not np.allclose(existing["x"].to_numpy(), df["x"].to_numpy()):
+    existing = pd.read_csv(FEATURES_IN_PATH, usecols=["x", "y", "z", *EXISTING_COLS])
+    if not np.allclose(existing[["x", "y", "z"]].to_numpy(),
+                       df[["x", "y", "z"]].to_numpy()):
         raise ValueError("features_current.csv row order mismatch with point cloud")
-    existing = existing.drop(columns=["x"]).set_index(df.index)
+    existing = existing.drop(columns=["x", "y", "z"]).set_index(df.index)
 
     out = pd.concat([df[["x", "y", "z"]], echo, grids, struct, existing], axis=1)
     out.to_csv(OUT_PATH, index=False)
