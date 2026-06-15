@@ -1,0 +1,23 @@
+{
+  "overall": {
+    "matched": 46,
+    "correct": 39,
+    "accuracy": 0.8478260869565217
+  },
+  "by_file": {
+    "points": {
+      "total": 130,
+      "matched": 42,
+      "correct": 35,
+      "accuracy": 0.8333333333333334,
+      "expect_water": true
+    },
+    "targets": {
+      "total": 8,
+      "matched": 0,
+      "correct": 0,
+      "accuracy": 0.0,
+      "expect_water": true
+    }
+  }
+}
