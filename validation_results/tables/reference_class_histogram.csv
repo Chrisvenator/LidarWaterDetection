@@ -1,0 +1,10 @@
+class,name,count,pct,maps_to
+2,ground,4001771,29.066,land
+3,low_veg,168848,1.226,land
+4,med_veg,572683,4.16,land
+5,high_veg,4586280,33.311,land
+7,low_noise,59038,0.429,ignore
+18,high_noise,24962,0.181,ignore
+40,bathy_bottom,2604453,18.917,water
+41,water_surface,1155813,8.395,water
+43,submerged,594144,4.315,water

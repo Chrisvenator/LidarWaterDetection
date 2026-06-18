@@ -1,0 +1,7 @@
+{
+  "dx": 527925.2829960228,
+  "dy": 5340171.594745995,
+  "method": "fft_channel_mask + hard_surface_refine",
+  "crs": "EPSG:25833",
+  "overlap": "eastern half of reference AOI"
+}
