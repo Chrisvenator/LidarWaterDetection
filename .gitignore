@@ -7,3 +7,11 @@
 /pointclouds_backup/
 /models_backup/
 /pointclouds/
+
+# Python packaging
+__pycache__/
+*.egg-info/
+.pytest_cache/
+/dist/
+/build/
+*.egg

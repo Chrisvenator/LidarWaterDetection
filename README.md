@@ -10,9 +10,16 @@ adaptive water-surface grid) bootstraps a supervised waveform transformer
 (WCN v9) and a canopy XGBoost classifier, with no labeled training data
 required to start.
 
-See `CLAUDE.md` for the full domain background, algorithm design, and the
-original per-script pipeline this library replaces. See `MIGRATION.md` for
-how the old `python src/stage_N_script.py` workflow maps onto the API below.
+## Documentation
+
+- **[docs/index.md](docs/index.md)** — feature overview + pipeline diagram
+- **[docs/usage.md](docs/usage.md)** — full usage guide: loading data,
+  running/configuring the pipeline, exporting, training, troubleshooting
+- **[docs/api.md](docs/api.md)** — API reference: every class, function,
+  and config field with defaults; label semantics; artifact registry
+- `CLAUDE.md` — domain background and algorithm design
+- `MIGRATION.md` — how the old `python src/stage_N_script.py` workflow
+  maps onto this API, and the parity-verification report
 
 ## Install
 
