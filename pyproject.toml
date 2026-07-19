@@ -26,7 +26,7 @@ dependencies = [
 [project.optional-dependencies]
 deep = ["torch>=2.0"]
 train = ["torch>=2.0"]
-dev = ["pytest>=7.4", "ruff>=0.4", "torch>=2.0"]
+dev = ["pytest>=7.4", "ruff>=0.4", "mypy>=1.8", "torch>=2.0"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/lidarwater"]
@@ -40,3 +40,16 @@ markers = [
 [tool.ruff]
 line-length = 100
 src = ["src"]
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true   # scipy/sklearn/xgboost/laspy/shapely ship no stubs
+check_untyped_defs = true
+warn_unused_ignores = true
+no_implicit_optional = true
+
+[[tool.mypy.overrides]]
+# nets.py assigns nn = torch.nn after a guarded dynamic import (torch is an
+# optional extra) — mypy can't resolve nn.Module as a base class there.
+module = "lidarwater._models.nets"
+disable_error_code = ["name-defined", "misc"]

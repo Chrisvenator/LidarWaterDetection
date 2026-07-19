@@ -309,12 +309,13 @@ def run(state: PipelineState, config: SurfaceConfig, *, geometry_only: bool = Tr
             raise ValueError("geometry_only=True needs state.wcn_xgb_proba and state.wcn_proba")
         ensemble = _ensemble_from_probas(xgb_proba, deep_proba)
     else:
+        if (state.autolabel_xgb_proba is None or state.autolabel_deep_proba is None
+                or state.autolabel_ensemble is None):
+            raise ValueError(
+                "geometry_only=False needs state.autolabel_xgb_proba/deep_proba/ensemble")
         xgb_proba = state.autolabel_xgb_proba
         deep_proba = state.autolabel_deep_proba
         ensemble = state.autolabel_ensemble
-        if xgb_proba is None or deep_proba is None or ensemble is None:
-            raise ValueError(
-                "geometry_only=False needs state.autolabel_xgb_proba/deep_proba/ensemble")
 
     feat_df = state.features
 

@@ -15,7 +15,7 @@ import json
 import numpy as np
 import pandas as pd
 import xgboost as xgb
-from sklearn.metrics import f1_score, roc_auc_score
+from sklearn.metrics import f1_score
 
 from .._models._torch_optional import require_torch
 from ..artifacts import ArtifactId, ArtifactResolver

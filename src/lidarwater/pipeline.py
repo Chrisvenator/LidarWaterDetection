@@ -125,6 +125,9 @@ class WaterPipeline:
 def _wcn_bootstrap(state: PipelineState) -> tuple[np.ndarray, np.ndarray]:
     """WCN training labels/confidence from the v6-anchored geometry pass:
     reconstructed water (label 3) counts as water for training purposes."""
+    assert (state.reconstructed_label is not None
+            and state.autolabel_xgb_proba is not None
+            and state.autolabel_deep_proba is not None)  # geometry + autolabel ran before this
     labels = state.reconstructed_label.copy()
     labels[labels == 3] = 1
     confidence = (state.autolabel_xgb_proba + state.autolabel_deep_proba) * 0.5
@@ -146,6 +149,8 @@ def _read_features_cache(cache_dir: Path):
 
 
 def _write_features_cache(cache_dir: Path, state: PipelineState) -> None:
+    assert (state.features is not None and state.waveform_grids is not None
+            and state.waveform_grids_norm is not None)  # features stage just ran
     cache_dir.mkdir(parents=True, exist_ok=True)
     state.features.to_parquet(cache_dir / _FEATURES_CACHE_NAME)
     np.save(cache_dir / _GRIDS_CACHE_NAME, state.waveform_grids)

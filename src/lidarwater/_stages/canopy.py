@@ -14,7 +14,6 @@ import pandas as pd
 import xgboost as xgb
 from scipy import ndimage
 from scipy.spatial import cKDTree
-from sklearn.metrics import f1_score, roc_auc_score
 
 from ..artifacts import ArtifactId, ArtifactResolver
 from ..config import CanopyConfig
@@ -184,13 +183,14 @@ def _open_sky_low_mask(df: pd.DataFrame, config: CanopyConfig) -> np.ndarray:
 
 def _make_labels(df: pd.DataFrame, state: PipelineState, config: CanopyConfig) -> np.ndarray:
     """-1 unlabeled, 0 not-canopy, 1 canopy, 2/3 pseudo-negatives."""
+    assert state.merged_label is not None and state.in_footprint is not None  # checked by fit()
     z = df["z"].to_numpy()
     labels = np.full(len(z), -1, dtype=int)
     labels[z > config.z_canopy_min] = 1
     labels[z <= config.z_clear_max] = 0
 
     z_above_surface = df["z"].to_numpy() - state.local_surface_z
-    at_surface = ((state.merged_label == LABEL_WATER) & (state.in_footprint)
+    at_surface = ((state.merged_label == LABEL_WATER) & state.in_footprint
                   & (np.abs(z_above_surface) < config.surface_tol_m))
     labels[(labels == -1) & at_surface] = 2
 
