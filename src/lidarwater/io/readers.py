@@ -1,6 +1,7 @@
 """Input adapters. ``PointCloud.from_dataframe`` is the primary constructor;
-``read_pielach_txt`` is a convenience wrapper around this project's original
-two-file ASCII format, kept so the existing Pielach workflow keeps working."""
+``read_waveform_txt`` wraps the two-file ASCII export this project's surveys
+ship as, and ``read_dataset_dir`` finds that pair inside a survey folder
+whatever the files happen to be named."""
 
 from __future__ import annotations
 
@@ -16,8 +17,8 @@ _CHUNK_SIZE = 10_000
 _NUMBER_RE = re.compile(r"[-+]?\d+")
 
 
-def read_pielach_txt(point_cloud_path: str | Path, waveform_path: str | Path) -> PointCloud:
-    """Read the original ``point_cloud_df.txt`` / ``waveform_df.txt`` pair.
+def read_waveform_txt(point_cloud_path: str | Path, waveform_path: str | Path) -> PointCloud:
+    """Read a ``point_cloud_df.txt`` / ``waveform_df.txt`` pair.
 
     Waveform columns hold numpy's ``repr()`` of each array (space-separated,
     possibly multi-line, not valid Python list syntax) — integers are
@@ -53,3 +54,29 @@ def read_pielach_txt(point_cloud_path: str | Path, waveform_path: str | Path) ->
         waveform_amps=flat_amps,
         waveform_offsets=np.asarray(offsets, dtype=np.int64),
     )
+
+
+_POINT_CLOUD_GLOB = "*point_cloud*.txt"
+_WAVEFORM_GLOB = "*wave*form*.txt"
+
+
+def read_dataset_dir(directory: str | Path) -> PointCloud:
+    """Read a survey folder holding one point-cloud and one waveform file.
+
+    Filenames vary between surveys (``point_cloud_df.txt`` vs
+    ``point_cloud_df_inn.txt``), so the pair is located by pattern.
+    """
+    directory = Path(directory)
+    points = sorted(directory.glob(_POINT_CLOUD_GLOB))
+    waveforms = [p for p in sorted(directory.glob(_WAVEFORM_GLOB)) if p not in points]
+    for label, found in (("point cloud", points), ("waveform", waveforms)):
+        if len(found) != 1:
+            raise FileNotFoundError(
+                f"expected exactly one {label} file in {directory}, found {len(found)}: "
+                f"{[p.name for p in found]}"
+            )
+    return read_waveform_txt(points[0], waveforms[0])
+
+
+# Original name, kept so existing Pielach code keeps working.
+read_pielach_txt = read_waveform_txt

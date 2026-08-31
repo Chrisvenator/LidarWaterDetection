@@ -13,6 +13,11 @@ from enum import Enum
 from pathlib import Path
 
 
+GRID_ORIGIN_FIRST_SAMPLE = "first_sample"
+GRID_ORIGIN_FIRST_RETURN = "first_return"
+GRID_ORIGINS = frozenset({GRID_ORIGIN_FIRST_SAMPLE, GRID_ORIGIN_FIRST_RETURN})
+
+
 class Stage(str, Enum):
     """Pipeline stages, in their natural dependency order."""
 
@@ -46,6 +51,21 @@ class FeatureConfig:
     grid_size: int = 200        # time bins per waveform grid
     knn_k: int = 20             # neighbours for geometric (planarity/roughness/...) features
     min_peak_adc: int = 100     # minimum ADC for waveform peak detection
+
+    # Where bin 0 of the dense grid sits. "first_sample" suits SVB-clustered
+    # records (Pielach) whose stored samples already start at the first echo.
+    # "first_return" is required for full-record digitisations that store the
+    # whole range gate including a long pre-trigger noise floor — anchoring
+    # those at times[0] fills the grid with noise. derive_site_config()
+    # measures which one a cloud needs.
+    grid_origin: str = "first_sample"      # "first_sample" | "first_return"
+    grid_noise_percentile: float = 10.0    # amplitude percentile taken as the noise floor
+    grid_return_frac: float = 0.10         # return starts at floor + this * (max - floor)
+
+    def __post_init__(self) -> None:
+        if self.grid_origin not in GRID_ORIGINS:
+            raise ValueError(f"grid_origin must be one of {sorted(GRID_ORIGINS)}, got {self.grid_origin!r}")
+
     gap_thresh_si: int = 2      # minimum time gap (SI) to count as a waveform gap
     local_min_radius_m: float = 3.0       # height_above_local_min radius
     local_min_radius_10m: float = 10.0    # height_above_local_min_10m radius
@@ -156,6 +176,9 @@ class SurfaceGridConfig:
     max_dist_from_tier1_m: float = 12.0    # cells farther than this use RANSAC fallback
     ransac_residual_m: float = 0.20
     ransac_max_rise_m: float = 0.15        # cap on RANSAC-fallback cells above the plane
+    ransac_z_lo: float = 259.4             # z band the RANSAC plane is fitted over
+    ransac_z_hi: float = 260.2
+    ransac_reflectance_max_db: float = -10.0   # reflectance gate for plane candidates
 
 
 @dataclasses.dataclass(frozen=True)
@@ -221,6 +244,14 @@ class CanopyConfig:
     r_local_m: float = 1.0          # cylinder/sphere neighborhood radius
     above_gap_m: float = 2.0        # neighbor this far above = canopy cover above
     dtm_percentile: float = 0.05    # robust per-cell ground elevation
+
+    # A site with no vegetation must yield no canopy, not whatever a
+    # canopy-trained model hallucinates. Both fit() and predict() first check
+    # how much of the cloud stands more than probe_height_m above the
+    # water-aware ground reference; below min_canopy_frac the site is treated
+    # as canopy-free and the stage short-circuits to all-zero probabilities.
+    probe_height_m: float = 3.0
+    min_canopy_frac: float = 0.002
 
 
 class LabelScheme(str, Enum):

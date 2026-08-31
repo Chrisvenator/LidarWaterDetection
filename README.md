@@ -89,6 +89,52 @@ write_geojson(state, config.boundary, "out/river_boundary.geojson")
 opalsImport -inFile out/classified.laz -outFile out/classified.odm
 ```
 
+## Run on a different dataset
+
+Every default in this library was tuned on the Pielach study area, and many
+are absolute metres above sea level or absolute reflectance decibels.
+`derive_site_config` measures the handful of properties those thresholds
+actually depend on and rebases them onto a new cloud, so no hand-tuning is
+needed to start:
+
+```python
+from lidarwater import Workspace, WaterPipeline, derive_site_config
+from lidarwater.io import read_dataset_dir
+
+cloud = read_dataset_dir("data/Inn_DeepLearning")   # finds the file pair by pattern
+config, profile = derive_site_config(cloud)
+print(profile.summary())
+
+workspace = Workspace.for_dataset("Inn_DeepLearning").mkdirs()   # runs/Inn_DeepLearning/
+pipeline = WaterPipeline(config=workspace.apply_to(config), artifacts=workspace.resolver())
+state = pipeline.fit(cloud)         # train this site's own models
+```
+
+What gets adapted, and how it is measured:
+
+| Property | Measured from | Rebases |
+|---|---|---|
+| Water level | densest 0.1 m elevation bin | every absolute `z` threshold in `ZoneConfig`, `FootprintConfig`, `SurfaceGridConfig`, `BoundaryConfig`, `CanopyConfig` |
+| Reflectance scale | percentile matching the -15 dB Pielach gate | `reflectance_max_db`, `ransac_reflectance_max_db` |
+| Waveform record type | share of energy inside the first `grid_size` samples | `FeatureConfig.grid_origin` — `first_return` for full-range-gate digitisations whose echoes sit hundreds of samples past `times[0]` |
+| Canopy presence | share of points >3 m above a per-cell ground surface | canopy stage short-circuits to all-zero probabilities on a bare site |
+
+Model architecture, training hyperparameters and dimensionless ratios are
+never touched. On the Pielach cloud the derivation is an exact no-op.
+
+Same thing from the command line:
+
+```bash
+python scripts/run_dataset.py data/Inn_DeepLearning --profile-only   # inspect first
+python scripts/run_dataset.py data/Inn_DeepLearning --fit            # train + classify
+python scripts/run_dataset.py data/Inn_DeepLearning --models models/ # apply existing models
+```
+
+All outputs (cached features, trained weights, labelled cloud, plots,
+`site_profile.json`, `metrics.json`) land under `runs/<dataset>/` — the
+repository-level `models/`, `pointclouds/` and `data_processed/` trees
+belong to Pielach and are never written to.
+
 ## Configuration
 
 Every tunable that used to be a hardcoded module constant lives on

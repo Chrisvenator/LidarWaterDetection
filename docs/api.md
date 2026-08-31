@@ -11,6 +11,7 @@ Contents:
 [PipelineState](#pipelinestate) ·
 [Stages & labels](#stages-and-label-semantics) ·
 [Configuration](#configuration-reference) ·
+[Site adaptation](#site-adaptation) ·
 [Artifacts](#artifact-resolution) ·
 [IO](#io)
 
@@ -192,6 +193,9 @@ values — re-derive per site.
 | `local_min_radius_m` / `local_min_radius_10m` | 3.0 / 10.0 | `height_above_local_min` radii |
 | `local_rank_radius_m` | 5.0 | `height_percentile_local` radius |
 | `raster_cell_m` | 0.5 | Cell size for rasterised spatial ops |
+| `grid_origin` | `"first_sample"` | Which sample maps to grid bin 0: `"first_sample"` for SVB-clustered records, `"first_return"` for full-range-gate digitisations. Set by `derive_site_config` |
+| `grid_noise_percentile` | 10.0 | Amplitude percentile taken as the noise floor (`first_return` only) |
+| `grid_return_frac` | 0.10 | Return starts at `floor + frac * (max - floor)` (`first_return` only) |
 
 ### WcnConfig
 
@@ -260,6 +264,8 @@ energy_concentration_min=0.85, reflectance_max_db=-15.0`), `z_cap=261.0`,
 | `above_gap_m` | 2.0 | "Crown overhead" gap |
 | `dtm_percentile` | 0.05 | Robust per-cell ground elevation |
 | `n_folds` | 5 | Spatial CV folds (fit only) |
+| `probe_height_m` | 3.0 | Height above the ground reference used to test whether the site has vegetation at all |
+| `min_canopy_frac` | 0.002 | Below this share of points above the probe, the site is canopy-free: both `predict()` and `fit()` return all-zero probabilities without loading or training a model |
 
 ### OutputConfig
 
@@ -268,6 +274,43 @@ energy_concentration_min=0.85, reflectance_max_db=-15.0`), `z_cap=261.0`,
 | `crs_epsg` | 25833 | Written into the LAS header (ETRS89 / UTM 33N) |
 | `xyz_offset` | (0, 0, 0) | Added to coordinates on export (restore real-world frame) |
 | `label_scheme` | `LabelScheme.TOPO_BATHY` | See mapping table above |
+
+---
+
+## Site adaptation
+
+```python
+from lidarwater import derive_site_config, SiteProfile, Workspace
+```
+
+| Member | Signature | Purpose |
+|---|---|---|
+| `derive_site_config` | `(cloud, base: PipelineConfig | None = None) -> (PipelineConfig, SiteProfile)` | Rebases `base`'s site-dependent thresholds onto `cloud`. Exact no-op on the Pielach cloud |
+| `SiteProfile` | frozen dataclass | What was measured and what it implied — see below |
+| `Workspace` | `Workspace.for_dataset(name, runs_dir="runs") -> Workspace` | Per-dataset output tree |
+
+`SiteProfile` fields: `n_points`, `water_level_z`, `z_shift_m`,
+`reflectance_shift_db`, `grid_origin`, `first_bin_energy_fraction`,
+`canopy_fraction_above_probe`, `canopy_expected`. `profile.summary()`
+renders them as an aligned block.
+
+What moves, and what does not:
+
+| Measured | Rebases |
+|---|---|
+| Water level (densest 0.1 m elevation bin) | `ZoneConfig` z-bands; `FootprintConfig.riverbed_z_max`, `riverbed_z_surface_max`; `SurfaceGridConfig.z_lo`, `z_hi`, `z_cap`, `ransac_z_lo`, `ransac_z_hi`; `BoundaryConfig.canopy_z_max`; `CanopyConfig.z_canopy_min`, `z_clear_max` |
+| Reflectance percentile matching the -15 dB Pielach gate | `SurfaceGridConfig.reflectance_max_db`, `ransac_reflectance_max_db`; `BedReconstructionConfig.reflectance_max_db` |
+| Waveform energy inside the first `grid_size` samples | `FeatureConfig.grid_origin` |
+| Points above `CanopyConfig.probe_height_m` | Reported as `canopy_expected`; enforced inside the canopy stage |
+
+`WcnConfig` (architecture + training hyperparameters), dimensionless
+ratios, and `grid_size` are never touched — the WCN input shape stays
+compatible with deployed checkpoints.
+
+`Workspace` members: `root`, `cache_dir`, `models_dir`, `pointclouds_dir`,
+`plot_dir`, `mkdirs()`, `resolver() -> LocalArtifactResolver`,
+`apply_to(config) -> PipelineConfig` (points `RunConfig.cache_dir` and
+`plot_dir` at the workspace, leaving stage selection and device alone).
 
 ---
 
@@ -306,12 +349,13 @@ download-on-demand resolver. `ARTIFACT_STAGES` (in
 ## IO
 
 ```python
-from lidarwater.io import read_pielach_txt, write_laz, write_geojson, classification_codes, boundary_to_geojson
+from lidarwater.io import read_waveform_txt, read_dataset_dir, write_laz, write_geojson, classification_codes, boundary_to_geojson
 ```
 
 | Function | Signature | Notes |
 |---|---|---|
-| `read_pielach_txt` | `(point_cloud_path, waveform_path) -> PointCloud` | Original two-file ASCII format; chunked; handles `_riegl.reflectance` rename and numpy-repr waveform strings |
+| `read_waveform_txt` | `(point_cloud_path, waveform_path) -> PointCloud` | Two-file ASCII format; chunked; handles `_riegl.reflectance` rename and numpy-repr waveform strings. `read_pielach_txt` is a kept alias |
+| `read_dataset_dir` | `(directory) -> PointCloud` | Finds the point-cloud/waveform pair in a survey folder by pattern, so survey-specific filenames need no extra argument. Raises `FileNotFoundError` if the match is not unique |
 | `write_laz` | `(state, output_config, path) -> None` | LAS 1.4 / point format 6; `.laz` extension → compressed. Requires `state.final_label` (run MERGE). Extra bytes: `water_proba`, `canopy_proba`, `raw_label` |
 | `classification_codes` | `(state, output_config) -> (N,) uint8` | The ASPRS code array `write_laz` uses, if you want it without writing a file |
 | `write_geojson` | `(state, boundary_config, path) -> None` | Boundary contours as a LineString FeatureCollection. Requires `state.boundary_contours` (run BOUNDARY) |

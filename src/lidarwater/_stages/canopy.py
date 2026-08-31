@@ -176,6 +176,28 @@ def build_canopy_features(state: PipelineState, config: CanopyConfig) -> pd.Data
     ], axis=1)
 
 
+def _canopy_present(df: pd.DataFrame, config: CanopyConfig) -> tuple[bool, float]:
+    """Whether this site has vegetation at all, from the fraction of points
+    standing clear of the water-aware ground reference.
+
+    A bare gravel-bed reach has essentially none, and must then report no
+    canopy rather than whatever a canopy-trained model extrapolates.
+    """
+    frac = float((df["height_above_ref"] > config.probe_height_m).mean())
+    return frac >= config.min_canopy_frac, frac
+
+
+def _set_no_canopy(state: PipelineState, n: int, frac_above_probe: float) -> PipelineState:
+    state.canopy_proba = np.zeros(n, dtype=np.float32)
+    state.canopy_pred = np.zeros(n, dtype=np.int8)
+    state.metrics["canopy"] = {
+        "canopy_present": False,
+        "frac_above_probe": frac_above_probe,
+        "canopy_fraction": 0.0,
+    }
+    return state
+
+
 def _open_sky_low_mask(df: pd.DataFrame, config: CanopyConfig) -> np.ndarray:
     return ((df["n_above_2m"] <= config.open_sky_max_above)
             & (df["height_above_ref"] < config.low_height_max_m)).to_numpy()
@@ -214,6 +236,10 @@ def _xgb_input(df: pd.DataFrame, feat_cols: list[str]) -> pd.DataFrame:
 
 def predict(state: PipelineState, config: CanopyConfig, resolver: ArtifactResolver) -> PipelineState:
     df = build_canopy_features(state, config)
+    present, frac = _canopy_present(df, config)
+    if not present:
+        return _set_no_canopy(state, len(df), frac)
+
     feat_cols = [c for c in df.columns if c not in _NON_FEATURE_COLS]
 
     model = xgb.XGBClassifier()
@@ -223,7 +249,11 @@ def predict(state: PipelineState, config: CanopyConfig, resolver: ArtifactResolv
 
     state.canopy_proba = proba
     state.canopy_pred = pred
-    state.metrics["canopy"] = {"canopy_fraction": float(pred.mean())}
+    state.metrics["canopy"] = {
+        "canopy_present": True,
+        "frac_above_probe": frac,
+        "canopy_fraction": float(pred.mean()),
+    }
     return state
 
 
@@ -232,12 +262,20 @@ def fit(state: PipelineState, config: CanopyConfig, resolver: ArtifactResolver) 
         raise ValueError("canopy fit needs state.merged_label/in_footprint — run geometry first")
 
     df = build_canopy_features(state, config)
+    present, frac = _canopy_present(df, config)
+    if not present:
+        return _set_no_canopy(state, len(df), frac)
+
     labels = _make_labels(df, state, config)
     feat_cols = [c for c in df.columns if c not in _NON_FEATURE_COLS]
     x, y = _xgb_input(df, feat_cols), (labels == 1).astype(int)
     labeled = labels >= 0
 
-    pos_w = (y[labeled] == 0).sum() / (y[labeled] == 1).sum()
+    n_positive = int((y[labeled] == 1).sum())
+    if n_positive == 0:
+        return _set_no_canopy(state, len(df), frac)   # z-band bootstrap found no canopy examples
+
+    pos_w = (y[labeled] == 0).sum() / n_positive
     model = xgb.XGBClassifier(**_XGB_PARAMS, scale_pos_weight=pos_w)
     model.fit(x[labeled], y[labeled])
     model.save_model(resolver.resolve_for_write(ArtifactId.CANOPY_XGB))
@@ -247,6 +285,8 @@ def fit(state: PipelineState, config: CanopyConfig, resolver: ArtifactResolver) 
     state.canopy_proba = proba
     state.canopy_pred = pred
     state.metrics["canopy"] = {
+        "canopy_present": True,
+        "frac_above_probe": frac,
         "n_labeled": int(labeled.sum()),
         "n_canopy_label": int((labels == 1).sum()),
         "n_clear_label": int((labels == 0).sum()),

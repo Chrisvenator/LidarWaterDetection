@@ -185,13 +185,11 @@ to fix (e.g. boundary thresholds out of order, or a stage set missing a
 dependency). The full field-by-field reference is in
 [api.md](api.md#configuration-reference).
 
-**Site adaptation warning:** `ZoneConfig` (elevation bands) and
-`CanopyConfig`'s z-bounds are Pielach-specific survey values, not physics.
-On a new site they must be re-derived (cross-section inspection in
-CloudCompare, as documented in CLAUDE.md) before `fit()` gives sensible
-bootstrap labels. `classify()` with pre-trained weights is less sensitive
-but the geometry stage's z-window constants also encode the site's water
-level.
+**Site adaptation:** `ZoneConfig`'s elevation bands, `CanopyConfig`'s
+z-bounds and the geometry stage's z-windows are Pielach survey values, not
+physics — they encode that site's water level. On a different survey, call
+`derive_site_config` (§8) to rebase them, then override anything that still
+looks wrong here.
 
 ## 7. Run a subset of stages
 
@@ -227,7 +225,88 @@ boundary.run(state, pipeline.config.boundary)
 signatures may change between minor versions; the `WaterPipeline` surface
 is the stable API.)
 
-## 8. Train on a new site (`fit()`)
+## 8. Adapt to a different survey (`derive_site_config`)
+
+The defaults are Pielach's. Rather than hand-tuning them per site,
+`derive_site_config` measures what they depend on and rebases them:
+
+```python
+from lidarwater import Workspace, WaterPipeline, derive_site_config
+from lidarwater.io import read_dataset_dir
+
+cloud = read_dataset_dir("data/Inn_DeepLearning")
+config, profile = derive_site_config(cloud)
+print(profile.summary())
+```
+
+```
+points                  230,559
+water level (densest z) 380.76 m
+z shift vs Pielach      +120.47 m
+reflectance shift       +14.1 dB
+waveform grid origin    first_return (energy in first bins 8.2%)
+canopy expected         True (1.28% of points >3 m above ground)
+```
+
+| Property | Measured from | Rebases |
+|---|---|---|
+| Water level | densest 0.1 m elevation bin | every absolute `z` threshold across `ZoneConfig`, `FootprintConfig`, `SurfaceGridConfig`, `BoundaryConfig`, `CanopyConfig` |
+| Reflectance scale | percentile matching the -15 dB Pielach gate | `reflectance_max_db`, `ransac_reflectance_max_db` |
+| Waveform record type | share of energy inside the first `grid_size` samples | `FeatureConfig.grid_origin` |
+| Canopy presence | share of points >3 m above a per-cell ground surface | canopy stage output |
+
+Architecture, training hyperparameters and dimensionless ratios are never
+touched, and on the Pielach cloud the derivation is an exact no-op, so
+`pytest -m golden` still passes. Override anything that looks wrong with
+`dataclasses.replace` afterwards — the derived config is an ordinary
+`PipelineConfig`.
+
+### Two things it handles that would otherwise fail silently
+
+**Full-record waveforms.** SVB-clustered exports (Pielach) store only
+samples around each echo, so `times[0]` *is* the first return. Other
+processing chains store the entire range gate: the Inn export digitises
+~700 samples of which the first ~550 are pre-trigger noise. Anchoring the
+dense grid at `times[0]` then fills it with noise — measured on the Inn
+cloud, only **7.8%** of waveform energy landed in the 200-bin grid.
+`grid_origin="first_return"` anchors on the first sample rising clear of
+the noise floor instead, raising capture to **87%**. Selected
+automatically; `grid_size` and therefore the WCN input shape are unchanged.
+
+**Sites without vegetation.** The canopy stage checks how much of the cloud
+stands more than `CanopyConfig.probe_height_m` above the water-aware ground
+reference. Below `min_canopy_frac` the site is treated as canopy-free and
+the stage returns all-zero probabilities without loading (or training) a
+model — a bare gravel-bed reach reports no canopy rather than whatever a
+canopy-trained model extrapolates. `state.metrics["canopy"]["canopy_present"]`
+records the decision.
+
+### Keeping sites apart
+
+`Workspace` gives each dataset its own output tree, so a new survey never
+writes into another's results:
+
+```python
+workspace = Workspace.for_dataset("Inn_DeepLearning").mkdirs()
+# runs/Inn_DeepLearning/{cache,models,pointclouds,plots}/
+
+pipeline = WaterPipeline(config=workspace.apply_to(config),
+                         artifacts=workspace.resolver())
+```
+
+Or from the command line, which wires all of the above together:
+
+```bash
+python scripts/run_dataset.py data/Inn_DeepLearning --profile-only
+python scripts/run_dataset.py data/Inn_DeepLearning --fit
+python scripts/run_dataset.py data/Inn_DeepLearning --models models/
+```
+
+`read_dataset_dir` locates the point-cloud/waveform pair by pattern, so
+survey-specific filenames (`point_cloud_df_inn.txt`) need no extra
+argument.
+
+## 9. Train on a new site (`fit()`)
 
 ```python
 pipeline = WaterPipeline.from_local_models("my_models/")   # empty dir is fine
@@ -254,9 +333,11 @@ Caveats, honestly stated:
   somewhat more conservative about water (18.5% vs 22.2% water fraction)
   — expected, since `fit()` skips the original's v8 retraining pass (see
   MIGRATION.md) and the original model benefited from manual iteration.
-- Re-derive `ZoneConfig` for your site first (see §6 warning).
+- Run `derive_site_config` first (§8) — `fit()` bootstraps its initial
+  labels from `ZoneConfig`'s absolute elevation bands, which are Pielach's
+  unless rebased.
 
-## 9. Troubleshooting
+## 10. Troubleshooting
 
 | Symptom | Cause / fix |
 |---|---|
@@ -265,5 +346,7 @@ Caveats, honestly stated:
 | `ValueError: points (...) and waveforms (...) row counts differ` | The two input tables must be row-aligned 1:1; re-check your loader |
 | `ValueError: Stage.CANOPY requires Stage.GEOMETRY ...` | Stage subset missing a dependency — add the named stage |
 | `ValueError: geometry_only=True needs state.wcn_xgb_proba and state.wcn_proba` | You ran GEOMETRY without WCN (or without injecting probas, §7) |
-| Classification looks shifted / everything is land | Site water level differs from Pielach — z-window constants in `SurfaceConfig`/`ZoneConfig` need adapting (§6 warning) |
+| Classification looks shifted / everything is land | Site water level differs from Pielach — run `derive_site_config` (§8) |
+| Water probabilities look random on a new survey | Waveforms may be full-record digitisations; check `profile.first_bin_energy_fraction` and `grid_origin` (§8) |
+| Everything on a bare site comes back as canopy | Check `state.metrics["canopy"]["canopy_present"]`; lower `CanopyConfig.min_canopy_frac` only if the site really has vegetation |
 | Feature extraction is slow on repeated runs | Set `RunConfig.cache_dir` — features + waveform grids are cached as parquet/npy and reused |

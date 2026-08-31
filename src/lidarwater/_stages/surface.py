@@ -30,9 +30,7 @@ LABEL_LAND, LABEL_WATER, LABEL_UNCERTAIN = 0, 1, 2
 
 # Feature columns build_surface_grid / bed reconstruction read directly.
 _RANSAC_CANDIDATE_CONF_MIN = 0.7
-_RANSAC_Z_LO, _RANSAC_Z_HI = 259.4, 260.2
 _RANSAC_N_PEAKS_MAX = 3
-_RANSAC_REFL_MAX_DB = -10.0
 
 
 def _ensemble_from_probas(xgb_proba: np.ndarray, deep_proba: np.ndarray) -> np.ndarray:
@@ -119,10 +117,10 @@ def build_surface_grid(feat_df: pd.DataFrame, xgb_proba: np.ndarray, deep_proba:
         mean_conf = (xgb_proba + deep_proba) * 0.5
         conf = (ensemble == LABEL_WATER) & (mean_conf >= _RANSAC_CANDIDATE_CONF_MIN)
 
-    surf_cand = (conf & (z_all >= _RANSAC_Z_LO) & (z_all <= _RANSAC_Z_HI)
+    surf_cand = (conf & (z_all >= sg.ransac_z_lo) & (z_all <= sg.ransac_z_hi)
                 & (feat_df["n_peaks"].values <= _RANSAC_N_PEAKS_MAX)
                 & (feat_df["energy_concentration"].values > sg.energy_concentration_min)
-                & (feat_df["reflectance_dB"].values < _RANSAC_REFL_MAX_DB))
+                & (feat_df["reflectance_dB"].values < sg.ransac_reflectance_max_db))
 
     ransac = RANSACRegressor(
         estimator=LinearRegression(), residual_threshold=sg.ransac_residual_m,

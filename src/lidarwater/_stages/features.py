@@ -13,7 +13,7 @@ import pandas as pd
 from scipy.ndimage import maximum_filter, minimum_filter
 from sklearn.neighbors import KDTree
 
-from ..config import FeatureConfig
+from ..config import GRID_ORIGIN_FIRST_RETURN, FeatureConfig
 from ..types import PipelineState, PointCloud
 
 # Columns emitted with a value of 0 when a waveform is malformed (empty or
@@ -85,13 +85,29 @@ def _extract_waveform_features(times: np.ndarray, amps: np.ndarray, config: Feat
     return f
 
 
-def _waveform_to_grid(times: np.ndarray, amps: np.ndarray, grid_size: int) -> np.ndarray:
+def _first_return_time(times: np.ndarray, amps: np.ndarray, config: FeatureConfig) -> int:
+    """Time [SI] of the first sample rising clear of the record's noise floor.
+
+    Full-record digitisations store the whole range gate, so times[0] is
+    pre-trigger noise hundreds of samples ahead of any echo.
+    """
+    # np.partition, not np.percentile: only the one order statistic is needed,
+    # and this runs once per point (~5 s vs ~0.5 s across a 230k-point cloud).
+    rank = int(0.01 * config.grid_noise_percentile * (len(amps) - 1))
+    floor = float(np.partition(amps, rank)[rank])
+    threshold = floor + config.grid_return_frac * (float(np.max(amps)) - floor)
+    above = np.flatnonzero(amps > threshold)
+    return int(times[above[0]]) if len(above) else int(times[0])
+
+
+def _waveform_to_grid(times: np.ndarray, amps: np.ndarray, config: FeatureConfig) -> np.ndarray:
     """Project a non-contiguous waveform onto a fixed-length dense grid,
-    origin-relative (first sample time maps to bin 0)."""
-    grid = np.zeros(grid_size, dtype=np.float32)
-    t_min = int(times[0])
-    idx = times.astype(np.int64) - t_min
-    valid = (idx >= 0) & (idx < grid_size)
+    origin-relative (the origin sample maps to bin 0)."""
+    t_origin = (_first_return_time(times, amps, config)
+                if config.grid_origin == GRID_ORIGIN_FIRST_RETURN else int(times[0]))
+    grid = np.zeros(config.grid_size, dtype=np.float32)
+    idx = times.astype(np.int64) - t_origin
+    valid = (idx >= 0) & (idx < config.grid_size)
     grid[idx[valid]] = amps[valid].astype(np.float32)
     return grid
 
@@ -111,7 +127,7 @@ def _extract_all_waveforms(cloud: PointCloud, config: FeatureConfig) -> tuple[pd
             records.append({k: 0 for k in _ZERO_FALLBACK_COLS})
             continue
         records.append(_extract_waveform_features(times, amps, config))
-        grids[i] = _waveform_to_grid(times, amps, config.grid_size)
+        grids[i] = _waveform_to_grid(times, amps, config)
     return pd.DataFrame.from_records(records), grids
 
 

@@ -7,7 +7,8 @@ Typical usage::
     from lidarwater.artifacts import LocalArtifactResolver
 
     cloud = PointCloud.from_dataframe(points_df, waveform_df)
-    pipeline = WaterPipeline.from_local_models("models/")
+    config, profile = derive_site_config(cloud)      # rebase thresholds onto this site
+    pipeline = WaterPipeline.from_local_models("models/", config=config)
     state = pipeline.classify(cloud)
     # state.final_label: 0=land, 1=water, 2=uncertain, 3=water-under-canopy, 4=canopy
 """
@@ -27,7 +28,9 @@ from .config import (
     ZoneConfig,
 )
 from .pipeline import WaterPipeline
+from .site import SiteProfile, derive_site_config
 from .types import PipelineState, PointCloud
+from .workspace import Workspace
 
 __version__ = "0.1.0"
 
@@ -51,4 +54,7 @@ __all__ = [
     "LocalArtifactResolver",
     "ArtifactId",
     "ArtifactNotFound",
+    "derive_site_config",
+    "SiteProfile",
+    "Workspace",
 ]
