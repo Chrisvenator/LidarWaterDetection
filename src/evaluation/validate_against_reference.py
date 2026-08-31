@@ -37,7 +37,7 @@ from scipy.signal import fftconvolve
 from scipy.spatial import cKDTree
 
 ROOT = Path(__file__).resolve().parent.parent.parent
-REF_DIR = ROOT / "data" / "mandlburger_pielach_2024"
+REF_DIR = ROOT / "data" / "Pielach" / "mandlburger_pielach_2024"
 REF_LAZ = REF_DIR / "Pielach_20241024_topoBathy_LiDAR.laz"
 REF_WSM = REF_DIR / "Pielach_20241024_WSM.tif"
 PRED_CSV = ROOT / "pointclouds" / "labeled_pointcloud_final.csv"

@@ -63,7 +63,7 @@ strings (numpy `repr()`-style strings are parsed by extracting integers).
 ```python
 from lidarwater.io import read_pielach_txt
 
-cloud = read_pielach_txt("data/point_cloud_df.txt", "data/waveform_df.txt")
+cloud = read_pielach_txt("data/Pielach/point_cloud_df.txt", "data/Pielach/waveform_df.txt")
 ```
 
 This handles the `_riegl.reflectance` column rename and the multi-line

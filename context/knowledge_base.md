@@ -628,8 +628,8 @@ def compute_water_confidence(point, waveform_features, geometry_features):
 ### Step 1: Load and align data
 ```python
 # Files
-# data/point_cloud_df.txt  → x, y, z, _riegl.reflectance (+ unnamed index)
-# data/waveform_df.txt     → Time [SI], Amplitude [ADC] (numpy array strings)
+# data/Pielach/point_cloud_df.txt  → x, y, z, _riegl.reflectance (+ unnamed index)
+# data/Pielach/waveform_df.txt     → Time [SI], Amplitude [ADC] (numpy array strings)
 
 # Alignment: row i in point_cloud_df corresponds to row i in waveform_df
 # Note: Multiple point rows may share the same waveform (multi-echo case)
@@ -813,7 +813,7 @@ Reference accuracy: Mandlburger et al. 2025 reports residual vertical errors **<
 
 ## 10. Dataset Characteristics (from Phase 4 Analysis)
 
-### Point Cloud (`data/point_cloud_df.txt`)
+### Point Cloud (`data/Pielach/point_cloud_df.txt`)
 
 | Parameter | Value |
 |-----------|-------|
@@ -857,7 +857,7 @@ Reference accuracy: Mandlburger et al. 2025 reports residual vertical errors **<
 
 Key observation: Roughly unimodal, slightly skewed toward lower (more negative) values, small tail at higher values. Possible two mixed populations: water/low-reflectance land (below -22 dB) and dry land/gravel/vegetation (above -20 dB).
 
-### Waveform Data (`data/waveform_df.txt`)
+### Waveform Data (`data/Pielach/waveform_df.txt`)
 
 | Parameter | Value |
 |-----------|-------|

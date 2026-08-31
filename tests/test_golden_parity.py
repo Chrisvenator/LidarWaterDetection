@@ -18,7 +18,9 @@ import pandas as pd
 import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
-DATA_OK = (ROOT / "data" / "point_cloud_df.txt").exists() and (ROOT / "data" / "waveform_df.txt").exists()
+PC_RAW = ROOT / "data" / "Pielach" / "point_cloud_df.txt"
+WF_RAW = ROOT / "data" / "Pielach" / "waveform_df.txt"
+DATA_OK = PC_RAW.exists() and WF_RAW.exists()
 MODELS_OK = (ROOT / "models" / "wcn_v9" / "wcn_refined.pt").exists()
 GOLDEN_CSV = ROOT / "pointclouds" / "labeled_pointcloud_final.csv"
 
@@ -26,7 +28,7 @@ pytestmark = pytest.mark.golden
 
 requires_data = pytest.mark.skipif(
     not (DATA_OK and MODELS_OK and GOLDEN_CSV.exists()),
-    reason="needs data/, models/, and pointclouds/labeled_pointcloud_final.csv (gitignored)",
+    reason="needs data/Pielach/, models/, and pointclouds/labeled_pointcloud_final.csv (gitignored)",
 )
 
 
@@ -35,7 +37,7 @@ def real_classify_state():
     from lidarwater import WaterPipeline
     from lidarwater.io import read_pielach_txt
 
-    cloud = read_pielach_txt(ROOT / "data" / "point_cloud_df.txt", ROOT / "data" / "waveform_df.txt")
+    cloud = read_pielach_txt(PC_RAW, WF_RAW)
     pipeline = WaterPipeline.from_local_models(ROOT / "models")
     state = pipeline.classify(cloud)
     golden = pd.read_csv(GOLDEN_CSV)

@@ -41,8 +41,8 @@ directory laid out like this repository's `models/` tree (see
 import pandas as pd
 from lidarwater import WaterPipeline
 
-points = pd.read_csv("data/point_cloud_df.txt")
-waveforms = pd.read_csv("data/waveform_df.txt")
+points = pd.read_csv("data/Pielach/point_cloud_df.txt")
+waveforms = pd.read_csv("data/Pielach/waveform_df.txt")
 
 from lidarwater import PointCloud
 cloud = PointCloud.from_dataframe(

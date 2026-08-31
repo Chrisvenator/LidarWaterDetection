@@ -26,7 +26,7 @@ import pandas as pd
 from scipy.spatial import cKDTree
 
 ROOT = Path(__file__).resolve().parent.parent.parent
-REF_DIR = ROOT / "data" / "mandlburger_pielach_2024"
+REF_DIR = ROOT / "data" / "Pielach" / "mandlburger_pielach_2024"
 PRED_CSV = ROOT / "pointclouds" / "labeled_pointcloud_final.csv"
 OUT_DIR = ROOT / "validation_results"
 REPORT = OUT_DIR / "validation_report.json"
