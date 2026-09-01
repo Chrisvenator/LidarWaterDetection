@@ -129,9 +129,13 @@ Same thing from the command line:
 
 ```bash
 python scripts/run_dataset.py data/Inn_DeepLearning --profile-only   # inspect first
-python scripts/run_dataset.py data/Inn_DeepLearning --fit            # train + classify
-python scripts/run_dataset.py data/Inn_DeepLearning --models models/ # apply existing models
+python scripts/run_dataset.py data/Inn_DeepLearning                  # classify with the pretrained weights
+python scripts/run_dataset.py data/Inn_DeepLearning --fit            # retrain for this site instead
 ```
+
+Classification reads the shipped `models/` tree by default. `--fit` always
+writes into `runs/<dataset>/models/`, so retraining on one survey can never
+overwrite another's weights.
 
 All outputs (cached features, trained weights, labelled cloud, plots,
 `site_profile.json`, `metrics.json`) land under `runs/<dataset>/` — the

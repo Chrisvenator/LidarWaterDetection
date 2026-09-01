@@ -29,6 +29,11 @@ from lidarwater.io import read_dataset_dir                            # noqa: E4
 
 LABEL_NAMES = {0: "land", 1: "water", 2: "uncertain", 3: "water_under_canopy", 4: "canopy"}
 
+# Shipped weights, trained on Pielach. Classification reads these by default;
+# training never writes here — a --fit run writes into its own workspace so a
+# retrain on one survey cannot overwrite another's models.
+PRETRAINED_MODELS = ROOT / "models"
+
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__,
@@ -37,9 +42,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--name", help="workspace name (default: dataset folder name)")
     p.add_argument("--runs-dir", type=Path, default=ROOT / "runs")
     p.add_argument("--fit", action="store_true",
-                   help="train this site's own models instead of applying existing ones")
+                   help="train this site's own models into the workspace instead of "
+                        "applying the pretrained ones")
     p.add_argument("--models", type=Path,
-                   help="model directory to classify with (default: the workspace's own)")
+                   help=f"model directory to classify with (default: {PRETRAINED_MODELS.name}/)")
     p.add_argument("--profile-only", action="store_true",
                    help="report the derived site profile and config, then exit")
     p.add_argument("--device", default="auto", choices=("auto", "cpu", "cuda"))
@@ -86,13 +92,22 @@ def main() -> int:
     if args.profile_only:
         return 0
 
-    resolver = LocalArtifactResolver(root=args.models) if args.models else workspace.resolver()
+    resolver = _resolver_for(args, workspace)
+    print(f"\n{'training into' if args.fit else 'classifying with'} {resolver.root}")
     pipeline = WaterPipeline(config=config, artifacts=resolver)
     state = pipeline.fit(cloud) if args.fit else pipeline.classify(cloud)
 
     report_labels(state)
     print(f"\nwrote {write_outputs(state, workspace, profile)}")
     return 0
+
+
+def _resolver_for(args: argparse.Namespace, workspace: Workspace) -> LocalArtifactResolver:
+    """Training writes into the workspace; classification reads the
+    pretrained tree unless told otherwise."""
+    if args.fit:
+        return workspace.resolver()
+    return LocalArtifactResolver(root=args.models or PRETRAINED_MODELS)
 
 
 def _with_device(config, device: str):

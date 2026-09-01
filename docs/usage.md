@@ -312,9 +312,12 @@ Or from the command line, which wires all of the above together:
 
 ```bash
 python scripts/run_dataset.py data/Inn_DeepLearning --profile-only
-python scripts/run_dataset.py data/Inn_DeepLearning --fit
-python scripts/run_dataset.py data/Inn_DeepLearning --models models/
+python scripts/run_dataset.py data/Inn_DeepLearning              # pretrained weights
+python scripts/run_dataset.py data/Inn_DeepLearning --fit        # retrain for this site
 ```
+
+Classification reads the shipped `models/` tree by default; `--fit` writes
+into `runs/<dataset>/models/` and never touches it.
 
 `read_dataset_dir` locates the point-cloud/waveform pair by pattern, so
 survey-specific filenames (`point_cloud_df_inn.txt`) need no extra
