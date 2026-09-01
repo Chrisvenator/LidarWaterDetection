@@ -117,10 +117,13 @@ What gets adapted, and how it is measured:
 | Water level | densest 0.1 m elevation bin | every absolute `z` threshold in `ZoneConfig`, `FootprintConfig`, `SurfaceGridConfig`, `BoundaryConfig`, `CanopyConfig` |
 | Reflectance scale | percentile matching the -15 dB Pielach gate | `reflectance_max_db`, `ransac_reflectance_max_db` |
 | Waveform record type | share of energy inside the first `grid_size` samples | `FeatureConfig.grid_origin` — `first_return` for full-range-gate digitisations whose echoes sit hundreds of samples past `times[0]` |
+| Compact-waveform gate | percentile matching Pielach's 0.85 `energy_concentration` gate | `SurfaceGridConfig.energy_concentration_min` |
 | Canopy presence | share of points >3 m above a per-cell ground surface | canopy stage short-circuits to all-zero probabilities on a bare site |
 
 Model architecture, training hyperparameters and dimensionless ratios are
-never touched. On the Pielach cloud the derivation is an exact no-op.
+never touched. On the Pielach cloud the z and reflectance rebasing is an
+exact no-op; the compact-waveform gate is estimated from a sample of
+waveforms and lands at 0.845 against the 0.85 default.
 
 Same thing from the command line:
 

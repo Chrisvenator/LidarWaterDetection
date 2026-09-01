@@ -204,6 +204,13 @@ def _local_normalized_rank(x: np.ndarray, y: np.ndarray, z: np.ndarray, radius: 
     return np.where(rng > 0.01, (zf - lmin) / rng, 0.5)
 
 
+# Leading bins "energy_concentration" measures energy within. Tuned to
+# Pielach's ~60-bin pulse; other sites' returns span a different number of
+# bins, so the *threshold* on this feature is rebased per site rather than
+# the window (see lidarwater.site.energy_concentration_gate).
+ENERGY_CONCENTRATION_BINS = 30
+
+
 def _waveform_shape_features(grids: np.ndarray) -> pd.DataFrame:
     g = grids.astype(np.float32)
     total_e = g.sum(axis=1)
@@ -211,7 +218,8 @@ def _waveform_shape_features(grids: np.ndarray) -> pd.DataFrame:
     bins = np.arange(g.shape[1], dtype=np.float32)
 
     return pd.DataFrame({
-        "energy_concentration": (g[:, :30].sum(axis=1) / safe_e).astype(np.float32),
+        "energy_concentration": (
+            g[:, :ENERGY_CONCENTRATION_BINS].sum(axis=1) / safe_e).astype(np.float32),
         "amplitude_weighted_center": ((g * bins).sum(axis=1) / safe_e).astype(np.float32),
         "active_bins_ratio": ((g > 0).sum(axis=1).astype(np.float32) / g.shape[1]),
         "max_amp_norm_by_energy": (g.max(axis=1) / safe_e).astype(np.float32),

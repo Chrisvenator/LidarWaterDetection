@@ -291,7 +291,8 @@ from lidarwater import derive_site_config, SiteProfile, Workspace
 
 `SiteProfile` fields: `n_points`, `water_level_z`, `z_shift_m`,
 `reflectance_shift_db`, `grid_origin`, `first_bin_energy_fraction`,
-`canopy_fraction_above_probe`, `canopy_expected`. `profile.summary()`
+`energy_concentration_gate`, `canopy_fraction_above_probe`,
+`canopy_expected`. `profile.summary()`
 renders them as an aligned block.
 
 What moves, and what does not:
@@ -301,6 +302,7 @@ What moves, and what does not:
 | Water level (densest 0.1 m elevation bin) | `ZoneConfig` z-bands; `FootprintConfig.riverbed_z_max`, `riverbed_z_surface_max`; `SurfaceGridConfig.z_lo`, `z_hi`, `z_cap`, `ransac_z_lo`, `ransac_z_hi`; `BoundaryConfig.canopy_z_max`; `CanopyConfig.z_canopy_min`, `z_clear_max` |
 | Reflectance percentile matching the -15 dB Pielach gate | `SurfaceGridConfig.reflectance_max_db`, `ransac_reflectance_max_db`; `BedReconstructionConfig.reflectance_max_db` |
 | Waveform energy inside the first `grid_size` samples | `FeatureConfig.grid_origin` |
+| Percentile matching Pielach's 0.85 compact-waveform gate | `SurfaceGridConfig.energy_concentration_min` |
 | Points above `CanopyConfig.probe_height_m` | Reported as `canopy_expected`; enforced inside the canopy stage |
 
 `WcnConfig` (architecture + training hyperparameters), dimensionless

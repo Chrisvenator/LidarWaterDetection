@@ -253,15 +253,17 @@ canopy expected         True (1.28% of points >3 m above ground)
 | Water level | densest 0.1 m elevation bin | every absolute `z` threshold across `ZoneConfig`, `FootprintConfig`, `SurfaceGridConfig`, `BoundaryConfig`, `CanopyConfig` |
 | Reflectance scale | percentile matching the -15 dB Pielach gate | `reflectance_max_db`, `ransac_reflectance_max_db` |
 | Waveform record type | share of energy inside the first `grid_size` samples | `FeatureConfig.grid_origin` |
+| Compact-waveform gate | percentile matching Pielach's 0.85 `energy_concentration` gate | `SurfaceGridConfig.energy_concentration_min` |
 | Canopy presence | share of points >3 m above a per-cell ground surface | canopy stage output |
 
 Architecture, training hyperparameters and dimensionless ratios are never
-touched, and on the Pielach cloud the derivation is an exact no-op, so
-`pytest -m golden` still passes. Override anything that looks wrong with
+touched. On the Pielach cloud the z and reflectance rebasing is exact and
+the compact-waveform gate estimates 0.845 against the 0.85 default;
+`pytest -m golden` runs against raw defaults and still passes. Override anything that looks wrong with
 `dataclasses.replace` afterwards — the derived config is an ordinary
 `PipelineConfig`.
 
-### Two things it handles that would otherwise fail silently
+### Three things it handles that would otherwise fail silently
 
 **Full-record waveforms.** SVB-clustered exports (Pielach) store only
 samples around each echo, so `times[0]` *is* the first return. Other
@@ -272,6 +274,18 @@ cloud, only **7.8%** of waveform energy landed in the 200-bin grid.
 `grid_origin="first_return"` anchors on the first sample rising clear of
 the noise floor instead, raising capture to **87%**. Selected
 automatically; `grid_size` and therefore the WCN input shape are unchanged.
+
+**Pulse length.** `energy_concentration` is the share of waveform energy in
+a fixed 30-bin window (`features.ENERGY_CONCENTRATION_BINS`) sized to
+Pielach's ~60-bin pulse, and the geometry stage gates water-surface
+candidates at `energy_concentration > 0.85`. Inn's returns occupy a median
+of 153 bins, so no Inn point can reach 0.85: the gate admitted 48.6% of the
+Pielach cloud but only 0.78% of Inn's, collapsing the RANSAC candidate set
+from thousands to 79 and aborting the geometry stage. The threshold is
+rebased to the value passing the same share of the cloud (0.294 on Inn),
+which restores 13,481 candidates. Note this rebases the *threshold*, not
+the window — on a site with a very different pulse length the feature's
+discriminative power is reduced even once the gate is corrected.
 
 **Sites without vegetation.** The canopy stage checks how much of the cloud
 stands more than `CanopyConfig.probe_height_m` above the water-aware ground
@@ -348,5 +362,6 @@ Caveats, honestly stated:
 | `ValueError: geometry_only=True needs state.wcn_xgb_proba and state.wcn_proba` | You ran GEOMETRY without WCN (or without injecting probas, §7) |
 | Classification looks shifted / everything is land | Site water level differs from Pielach — run `derive_site_config` (§8) |
 | Water probabilities look random on a new survey | Waveforms may be full-record digitisations; check `profile.first_bin_energy_fraction` and `grid_origin` (§8) |
+| `InvalidParameterError: 'min_samples' ... Got np.float64(1.26)` | Too few surface candidates for the RANSAC plane fit — check `energy_concentration_min` against the site's distribution (§8) |
 | Everything on a bare site comes back as canopy | Check `state.metrics["canopy"]["canopy_present"]`; lower `CanopyConfig.min_canopy_frac` only if the site really has vegetation |
 | Feature extraction is slow on repeated runs | Set `RunConfig.cache_dir` — features + waveform grids are cached as parquet/npy and reused |

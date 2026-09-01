@@ -31,6 +31,19 @@ LABEL_LAND, LABEL_WATER, LABEL_UNCERTAIN = 0, 1, 2
 # Feature columns build_surface_grid / bed reconstruction read directly.
 _RANSAC_CANDIDATE_CONF_MIN = 0.7
 _RANSAC_N_PEAKS_MAX = 3
+_RANSAC_MIN_ABS_SAMPLES = 100    # prefer this many candidates per plane fit
+_RANSAC_MIN_FRAC_SAMPLES = 0.5   # ...but never fewer than half of them
+
+
+def _ransac_min_samples(n_candidates: int) -> float:
+    """Fraction of candidates each RANSAC trial fits, as sklearn wants it.
+
+    Scarce candidates would push the 100-point target past 1.0, which
+    sklearn rejects outright — cap it, since no trial can use more samples
+    than exist.
+    """
+    target = _RANSAC_MIN_ABS_SAMPLES / max(n_candidates, 1)
+    return min(1.0, max(_RANSAC_MIN_FRAC_SAMPLES, target))
 
 
 def _ensemble_from_probas(xgb_proba: np.ndarray, deep_proba: np.ndarray) -> np.ndarray:
@@ -124,7 +137,7 @@ def build_surface_grid(feat_df: pd.DataFrame, xgb_proba: np.ndarray, deep_proba:
 
     ransac = RANSACRegressor(
         estimator=LinearRegression(), residual_threshold=sg.ransac_residual_m,
-        min_samples=max(0.5, 100 / max(surf_cand.sum(), 1)), random_state=42,
+        min_samples=_ransac_min_samples(int(surf_cand.sum())), random_state=42,
     )
     ransac.fit(np.column_stack([x_all[surf_cand], y_all[surf_cand]]), z_all[surf_cand])
     a, b = ransac.estimator_.coef_
