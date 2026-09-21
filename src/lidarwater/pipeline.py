@@ -89,7 +89,8 @@ class WaterPipeline:
         device = self.config.run.device
 
         if Stage.AUTOLABEL in requested:
-            autolabel.fit(state, self.config.zones, self.artifacts, device=device)
+            autolabel.fit(state, self.config.zones, self.artifacts,
+                          self.config.bootstrap, device=device)
         if Stage.WCN in requested:
             surface.run(state, self.config.surface, geometry_only=False)   # v6-anchored bootstrap pass
             bootstrap_labels, bootstrap_confidence = _wcn_bootstrap(state)

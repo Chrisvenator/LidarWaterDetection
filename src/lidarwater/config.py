@@ -17,6 +17,22 @@ GRID_ORIGIN_FIRST_SAMPLE = "first_sample"
 GRID_ORIGIN_FIRST_RETURN = "first_return"
 GRID_ORIGINS = frozenset({GRID_ORIGIN_FIRST_SAMPLE, GRID_ORIGIN_FIRST_RETURN})
 
+# The 11 dimensionless features WCN v9 ships with. Reflectance is absent by
+# design: its dB scale is a property of the scanner and the survey, so it does
+# not transfer between sites. A model trained *for* one site is only ever used
+# there, so derive_site_config() adds it back — on Inn it is the single
+# strongest water/land feature (AUC 0.973 alone, against 0.924 for all 11).
+WCN_SCALAR_FEATURES: tuple[str, ...] = (
+    "energy_concentration", "max_amp_norm_by_energy", "energy_ratio_late",
+    "active_bins_ratio", "peak_amp_ratio", "gap_ratio", "energy_center_norm",
+    "n_peaks", "n_gaps", "n_clusters", "depth_proxy_m",
+)
+REFLECTANCE_FEATURE = "reflectance_dB"
+
+STANDARDIZE_ARTIFACT = "artifact"
+STANDARDIZE_SITE = "site"
+STANDARDIZE_MODES = frozenset({STANDARDIZE_ARTIFACT, STANDARDIZE_SITE})
+
 
 class Stage(str, Enum):
     """Pipeline stages, in their natural dependency order."""
@@ -62,6 +78,13 @@ class FeatureConfig:
     grid_noise_percentile: float = 10.0    # amplitude percentile taken as the noise floor
     grid_return_frac: float = 0.10         # return starts at floor + this * (max - floor)
 
+    # Full-record digitisations store the whole range gate, so most samples
+    # are noise. Gating them away restores the sparse, echo-only record an
+    # SVB export produces, which is what the gap/cluster/occupancy features
+    # and the WCN's occupancy-mask channel assume. Set by derive_site_config.
+    noise_gate: bool = False
+    noise_gate_k: float = 3.0              # keep samples > floor + k * (median - floor)
+
     def __post_init__(self) -> None:
         if self.grid_origin not in GRID_ORIGINS:
             raise ValueError(f"grid_origin must be one of {sorted(GRID_ORIGINS)}, got {self.grid_origin!r}")
@@ -88,6 +111,43 @@ class ZoneConfig:
     z_banks_min: float = 260.9
     z_banks_max: float = 263.1
     z_canopy_min: float = 263.3
+
+
+BOOTSTRAP_ZONES = "zones"
+BOOTSTRAP_SURFACE = "surface"
+BOOTSTRAP_METHODS = frozenset({BOOTSTRAP_ZONES, BOOTSTRAP_SURFACE})
+
+
+@dataclasses.dataclass(frozen=True)
+class BootstrapConfig:
+    """How the first labels are made, before any model exists.
+
+    ``"zones"`` is the original absolute-elevation banding (ZoneConfig): it
+    assumes the site's water sits in a known height range, which is a
+    property of one survey, not of water.
+
+    ``"surface"`` uses no absolute elevation at all. It rasterises the cloud,
+    takes each cell's top surface, keeps cells whose top agrees with their
+    neighbours' (a coherent sheet), and splits those by the median
+    reflectance of the *surface layer only* — bimodal because it is not
+    diluted by riverbed returns. Measured on Inn against hand-labelled
+    points: 97.2% balanced accuracy (100% water, 94.4% land), against 61.0%
+    for the same threshold search over all points' reflectance.
+    """
+
+    method: str = BOOTSTRAP_ZONES
+    cell_m: float = 3.0
+    top_percentile: float = 0.97      # "the surface" within a cell
+    surface_layer_m: float = 0.15     # points this close to the top define its reflectance
+    coherence_max_m: float = 0.15     # max deviation from the neighbourhood sheet
+    sheet_filter_cells: int = 7       # median-filter width defining that neighbourhood
+    min_points_per_cell: int = 5
+
+    def __post_init__(self) -> None:
+        if self.method not in BOOTSTRAP_METHODS:
+            raise ValueError(
+                f"bootstrap method must be one of {sorted(BOOTSTRAP_METHODS)}, "
+                f"got {self.method!r}")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -146,6 +206,28 @@ class WcnConfig:
     arch: WcnArchConfig = dataclasses.field(default_factory=WcnArchConfig)
     train: WcnTrainConfig = dataclasses.field(default_factory=WcnTrainConfig)
 
+    # Where the scalar z-scoring stats come from. The checkpoint ships the
+    # mean/std of its training set — a property of that survey, not of the
+    # model — so reusing them elsewhere pushes inputs far outside the range
+    # the network ever saw. "site" recomputes them from the cloud being
+    # classified. Set by derive_site_config; "artifact" keeps the deployed
+    # Pielach behaviour bit-for-bit.
+    standardize: str = "artifact"          # "artifact" | "site"
+
+    # Which feature columns the scalar branch consumes. ``predict`` takes this
+    # from the checkpoint's own stats file instead, so a model always sees the
+    # features it was trained on.
+    scalar_features: tuple[str, ...] = WCN_SCALAR_FEATURES
+
+    def __post_init__(self) -> None:
+        if self.standardize not in STANDARDIZE_MODES:
+            raise ValueError(
+                f"standardize must be one of {sorted(STANDARDIZE_MODES)}, got {self.standardize!r}")
+        if self.arch.n_scalar != len(self.scalar_features):
+            raise ValueError(
+                f"arch.n_scalar ({self.arch.n_scalar}) must match the number of "
+                f"scalar_features ({len(self.scalar_features)})")
+
 
 @dataclasses.dataclass(frozen=True)
 class FootprintConfig:
@@ -189,6 +271,11 @@ class BedReconstructionConfig:
     max_dist_m: float = 6.0          # max dist from confirmed bed data to qualify
     margin_m: float = 0.5            # z headroom below reconstructed bed
     proba_min: float = 0.95          # deep_proba threshold for high-conf bed anchor
+    enabled: bool = True
+    # Phase 3b exists to recover water points hidden under tree crowns. A site
+    # with almost no canopy has no crowns to hide water under, so running it
+    # only invents a class that cannot exist there.
+    min_canopy_frac: float = 0.05
     recon_label: int = 3
     reflectance_max_db: float = -15.0
     min_peaks: int = 3
@@ -203,6 +290,13 @@ class SurfaceConfig:
     surface_grid: SurfaceGridConfig = dataclasses.field(default_factory=SurfaceGridConfig)
     bed: BedReconstructionConfig = dataclasses.field(default_factory=BedReconstructionConfig)
     water_tol_m: float = 0.30   # inside footprint, z <= surface + this -> WATER
+    # Where the surface grid had no nearby measurement it falls back to a
+    # global plane, which on a wide channel sits below the true local surface
+    # in patches. Points there were then "above surface" and forced to LAND
+    # regardless of what the model said — the blocky islands on Inn, 73.6% of
+    # which both model heads called water. Where the estimate is a fallback,
+    # widen the tolerance and let the model decide.
+    fallback_tol_m: float = 0.30   # default: same as water_tol_m, i.e. no change
 
 
 @dataclasses.dataclass(frozen=True)
@@ -303,6 +397,7 @@ class PipelineConfig:
     """
 
     zones: ZoneConfig = dataclasses.field(default_factory=ZoneConfig)
+    bootstrap: BootstrapConfig = dataclasses.field(default_factory=BootstrapConfig)
     features: FeatureConfig = dataclasses.field(default_factory=FeatureConfig)
     wcn: WcnConfig = dataclasses.field(default_factory=WcnConfig)
     surface: SurfaceConfig = dataclasses.field(default_factory=SurfaceConfig)

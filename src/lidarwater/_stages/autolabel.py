@@ -12,11 +12,12 @@ import json
 import numpy as np
 import pandas as pd
 import xgboost as xgb
+from scipy import ndimage
 from sklearn.metrics import f1_score
 
 from .._models._torch_optional import require_torch
 from ..artifacts import ArtifactId, ArtifactResolver
-from ..config import ZoneConfig
+from ..config import BOOTSTRAP_SURFACE, BootstrapConfig, ZoneConfig
 from ..types import PipelineState
 
 WAVEFORM_FEATURES = [
@@ -30,6 +31,77 @@ WAVEFORM_FEATURES = [
 ]
 
 
+def create_surface_labels(features: pd.DataFrame, config: BootstrapConfig) -> np.ndarray:
+    """1=water, 0=land, -1=excluded — from surface shape, not absolute height.
+
+    Water is a coherent flat sheet; so is a gravel bar, so flatness alone
+    cannot separate them (measured: 100% water recall, 40% on land). What
+    does separate them is the reflectance of the surface itself, once it is
+    isolated from the riverbed returns underneath that otherwise smear the
+    histogram across both classes.
+    """
+    cell_top, cell_reflectance, cell_of_point = _cell_surfaces(features, config)
+    coherent = _sheet_coherence(cell_top, config) < config.coherence_max_m
+    usable = coherent & np.isfinite(cell_reflectance)
+    if usable.sum() < 2:
+        raise ValueError("surface bootstrap found no coherent sheet — is the cloud rasterisable?")
+
+    threshold = _otsu(cell_reflectance[usable])
+    # Water is the coherent sheet with surface reflectance below the split.
+    # Everything else that was measurable is land: a cell whose top does not
+    # agree with its neighbours is not a water surface, whatever its height.
+    populated = np.isfinite(cell_reflectance)
+    cell_label = np.full(cell_reflectance.size, -1, dtype=np.int8)
+    cell_label[populated] = 0
+    cell_label[usable & (cell_reflectance < threshold)] = 1
+    return cell_label[cell_of_point]
+
+
+def _cell_surfaces(features: pd.DataFrame, config: BootstrapConfig):
+    """Per-cell top elevation and the median reflectance of that top layer."""
+    x, y, z = (features[c].to_numpy() for c in "xyz")
+    ix = ((x - x.min()) / config.cell_m).astype(int)
+    iy = ((y - y.min()) / config.cell_m).astype(int)
+    shape = (ix.max() + 1, iy.max() + 1)
+    cell_of_point = ix * shape[1] + iy
+    n_cells = shape[0] * shape[1]
+
+    frame = pd.DataFrame({"cell": cell_of_point, "z": z,
+                          "reflectance": features["reflectance_dB"].to_numpy()})
+    counts = frame.groupby("cell").z.size()
+    tops = frame.groupby("cell").z.quantile(config.top_percentile)
+
+    top = np.full(n_cells, np.nan)
+    enough = counts.index[counts >= config.min_points_per_cell]
+    top[enough] = tops.loc[enough].to_numpy()
+
+    at_surface = (top[cell_of_point] - z) < config.surface_layer_m
+    surface_reflectance = frame[at_surface].groupby("cell").reflectance.median()
+    reflectance = np.full(n_cells, np.nan)
+    reflectance[surface_reflectance.index] = surface_reflectance.to_numpy()
+    reflectance[np.isnan(top)] = np.nan
+    return top.reshape(shape), reflectance, cell_of_point
+
+
+def _sheet_coherence(top: np.ndarray, config: BootstrapConfig) -> np.ndarray:
+    """How far each cell's top sits from the surface its neighbours describe."""
+    filled = np.nan_to_num(top, nan=float(np.nanmedian(top)))
+    sheet = ndimage.median_filter(filled, size=config.sheet_filter_cells)
+    return np.abs(top - sheet).ravel()
+
+
+def _otsu(values: np.ndarray, bins: int = 200) -> float:
+    """Threshold maximising between-class variance."""
+    hist, edges = np.histogram(values, bins=bins)
+    p = hist / hist.sum()
+    weight = np.cumsum(p)
+    mean = np.cumsum(p * np.arange(bins))
+    spread = weight * (1 - weight)
+    variance = np.divide((mean[-1] * weight - mean) ** 2, spread,
+                         out=np.zeros(bins), where=spread > 1e-12)
+    return float(edges[int(variance.argmax())])
+
+
 def create_labels(z: np.ndarray, zones: ZoneConfig) -> np.ndarray:
     """1=water, 0=land, -1=excluded (gap between confidently-labeled bands)."""
     label = np.full(len(z), -1, dtype=np.int8)
@@ -39,6 +111,14 @@ def create_labels(z: np.ndarray, zones: ZoneConfig) -> np.ndarray:
     label[(z >= zones.z_banks_min) & (z < zones.z_banks_max)] = 0
     label[z >= zones.z_canopy_min] = 0
     return label
+
+
+def bootstrap(features: pd.DataFrame, zones: ZoneConfig,
+              config: BootstrapConfig) -> np.ndarray:
+    """Initial water/land labels, by whichever method the config selects."""
+    if config.method == BOOTSTRAP_SURFACE:
+        return create_surface_labels(features, config)
+    return create_labels(features["z"].to_numpy(), zones)
 
 
 def _select_device(device: str):
@@ -205,12 +285,13 @@ def _train_deep(df_train: pd.DataFrame, grids_train: np.ndarray, cols: list[str]
 
 
 def fit(state: PipelineState, zones: ZoneConfig, resolver: ArtifactResolver,
+        bootstrap_config: BootstrapConfig | None = None,
        device: str = "auto") -> PipelineState:
     if state.features is None or state.waveform_grids is None:
         raise ValueError("autolabel fit needs state.features and state.waveform_grids")
 
     feat_df = state.features
-    label = create_labels(feat_df["z"].values, zones)
+    label = bootstrap(feat_df, zones, bootstrap_config or BootstrapConfig())
     train_mask = label != -1
     df_train = feat_df[train_mask].copy()
     df_train["label"] = label[train_mask]

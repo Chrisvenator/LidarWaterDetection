@@ -52,8 +52,8 @@ class Workspace:
         return LocalArtifactResolver(root=self.models_dir)
 
     def apply_to(self, config: PipelineConfig) -> PipelineConfig:
-        """Point a config's caching and plotting at this workspace, leaving
-        its stage selection and device untouched."""
-        run = dataclasses.replace(config.run, cache_dir=self.cache_dir, plot_dir=self.plot_dir)
-        return dataclasses.replace(config, run=run)
+        """Point a config's feature cache and plot output at this workspace,
+        leaving its stage selection and device untouched."""
+        return dataclasses.replace(config, run=dataclasses.replace(
+            config.run, cache_dir=self.cache_dir, plot_dir=self.plot_dir))
 
