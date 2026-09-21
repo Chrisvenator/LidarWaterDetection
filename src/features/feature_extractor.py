@@ -263,8 +263,8 @@ def run(pc_path: str, wf_path: str,
 
 def main():
     ap = argparse.ArgumentParser(description='Feature extraction for LiDAR classifier')
-    ap.add_argument('--pc',        default='data/point_cloud_df.txt')
-    ap.add_argument('--wf',        default='data/waveform_df.txt')
+    ap.add_argument('--pc',        default='data/Pielach/point_cloud_df.txt')
+    ap.add_argument('--wf',        default='data/Pielach/waveform_df.txt')
     ap.add_argument('--out',       default='features.csv')
     ap.add_argument('--grid-out',  default='waveform_grids.npy')
     ap.add_argument('--skip-geo',  action='store_true',

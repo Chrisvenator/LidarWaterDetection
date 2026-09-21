@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Download the Mandlburger et al. Pielach River reference dataset (Oct 2024)
-# from TU Wien Research Data into data/mandlburger_pielach_2024/.
+# from TU Wien Research Data into data/Pielach/mandlburger_pielach_2024/.
 #
 #   Record: https://researchdata.tuwien.ac.at/records/taz19-r6618
 #   DOI:    10.48436/taz19-r6618   (CC-BY 4.0)
@@ -25,7 +25,7 @@ set -euo pipefail
 readonly RECORD="taz19-r6618"
 readonly BASE="https://researchdata.tuwien.ac.at/api/records/${RECORD}/files"
 readonly ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-readonly DEST="${ROOT}/data/mandlburger_pielach_2024"
+readonly DEST="${ROOT}/data/Pielach/mandlburger_pielach_2024"
 
 # filename:expected_size_bytes  (size used to detect a complete download)
 readonly FILES=(

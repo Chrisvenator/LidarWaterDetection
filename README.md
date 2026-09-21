@@ -1,0 +1,197 @@
+# lidar-water-detection
+
+Water / land / canopy classification for full-waveform bathymetric LiDAR
+point clouds, built for topo-bathymetric UAV surveys (RIEGL VQ-840-GL, 532 nm
+green laser) of narrow river valleys. Installable library, called from Python
+code — no CLI.
+
+Approach: a rule-based geometry model (concave-hull river footprint + local
+adaptive water-surface grid) bootstraps a supervised waveform transformer
+(WCN v9) and a canopy XGBoost classifier, with no labeled training data
+required to start.
+
+## Documentation
+
+- **[docs/index.md](docs/index.md)** — feature overview + pipeline diagram
+- **[docs/usage.md](docs/usage.md)** — full usage guide: loading data,
+  running/configuring the pipeline, exporting, training, troubleshooting
+- **[docs/api.md](docs/api.md)** — API reference: every class, function,
+  and config field with defaults; label semantics; artifact registry
+- `CLAUDE.md` — domain background and algorithm design
+- `MIGRATION.md` — how the old `python src/stage_N_script.py` workflow
+  maps onto this API, and the parity-verification report
+
+## Install
+
+```bash
+pip install lidar-water-detection            # inference only (XGBoost stages)
+pip install "lidar-water-detection[deep]"    # + WCN v9 / V6Net / V8Net (torch)
+pip install "lidar-water-detection[train]"   # + retraining support
+```
+
+Trained model weights are not bundled — point a `LocalArtifactResolver` at a
+directory laid out like this repository's `models/` tree (see
+`src/lidarwater/artifacts.py` for the exact filenames expected).
+
+## Quick start
+
+### 1. Classify a point cloud with existing trained models
+
+```python
+import pandas as pd
+from lidarwater import WaterPipeline
+
+points = pd.read_csv("data/Pielach/point_cloud_df.txt")
+waveforms = pd.read_csv("data/Pielach/waveform_df.txt")
+
+from lidarwater import PointCloud
+cloud = PointCloud.from_dataframe(
+    points.rename(columns={"_riegl.reflectance": "reflectance_dB"}), waveforms,
+)
+
+pipeline = WaterPipeline.from_local_models("models/")
+state = pipeline.classify(cloud)
+
+# state.final_label: 0=land, 1=water, 2=uncertain, 3=water-under-canopy, 4=canopy
+print((state.final_label == 1).sum(), "water points")
+```
+
+### 2. Override thresholds and run a stage subset
+
+```python
+import dataclasses
+from lidarwater import PipelineConfig, Stage, WaterPipeline
+from lidarwater.config import BoundaryConfig
+
+config = PipelineConfig(
+    boundary=BoundaryConfig(prob_inner=0.7, prob_center=0.5, prob_outer=0.3),
+)
+pipeline = WaterPipeline.from_local_models("models/", config=config)
+
+# Just the water classification, skip canopy/merge/boundary
+state = pipeline.run_stages(cloud, stages=[Stage.WCN, Stage.GEOMETRY])
+```
+
+### 3. Export LAS/LAZ and hand off to OPALS
+
+```python
+from lidarwater.io import write_laz, write_geojson
+
+state = pipeline.classify(cloud)
+write_laz(state, config.output, "out/classified.laz")
+write_geojson(state, config.boundary, "out/river_boundary.geojson")
+```
+
+```bash
+# OPALS auto-detects LAS/LAZ; classification codes follow the ASPRS
+# topo-bathy profile by default (2=ground, 5=high veg, 40=bathy bottom,
+# 41=water surface, 1=unclassified for the "uncertain" class).
+opalsImport -inFile out/classified.laz -outFile out/classified.odm
+```
+
+## Run on a different dataset
+
+Every default in this library was tuned on the Pielach study area, and many
+are absolute metres above sea level or absolute reflectance decibels.
+`derive_site_config` measures the handful of properties those thresholds
+actually depend on and rebases them onto a new cloud, so no hand-tuning is
+needed to start:
+
+```python
+from lidarwater import Workspace, WaterPipeline, derive_site_config
+from lidarwater.io import read_dataset_dir
+
+cloud = read_dataset_dir("data/Inn_DeepLearning")   # finds the file pair by pattern
+config, profile = derive_site_config(cloud)
+print(profile.summary())
+
+workspace = Workspace.for_dataset("Inn_DeepLearning").mkdirs()   # runs/Inn_DeepLearning/
+pipeline = WaterPipeline(config=workspace.apply_to(config), artifacts=workspace.resolver())
+state = pipeline.fit(cloud)         # train this site's own models
+```
+
+What gets adapted, and how it is measured:
+
+| Property | Measured from | Rebases |
+|---|---|---|
+| Water level | densest 0.1 m elevation bin | every absolute `z` threshold in `ZoneConfig`, `FootprintConfig`, `SurfaceGridConfig`, `BoundaryConfig`, `CanopyConfig` |
+| Reflectance scale | percentile matching the -15 dB Pielach gate | `reflectance_max_db`, `ransac_reflectance_max_db` |
+| Waveform record type | share of energy inside the first `grid_size` samples | `FeatureConfig.grid_origin` — `first_return` for full-range-gate digitisations whose echoes sit hundreds of samples past `times[0]` |
+| Compact-waveform gate | percentile matching Pielach's 0.85 `energy_concentration` gate | `SurfaceGridConfig.energy_concentration_min` |
+| Canopy presence | share of points >3 m above a per-cell ground surface | canopy stage short-circuits to all-zero probabilities on a bare site |
+
+Model architecture, training hyperparameters and dimensionless ratios are
+never touched. On the Pielach cloud the z and reflectance rebasing is an
+exact no-op; the compact-waveform gate is estimated from a sample of
+waveforms and lands at 0.845 against the 0.85 default.
+
+### One model per site — cross-site models do not work
+
+**A model fitted on one survey does not transfer to another, and this is
+measured, not assumed.** Waveform-only classification is excellent *within* a
+site (AUC 0.989 Pielach, 0.972 Inn) and no better than chance *across* sites
+(0.42-0.69 in both directions, with or without site-rank normalisation, with
+or without the features that differ most between the two exports).
+
+The cause is that waveform shape describes the scanner's processing chain as
+much as the water. Pielach's four most discriminative features are the
+gap/cluster family, which exists because its SVB export stores only samples
+around each echo; Inn's full-range-gate export has no such structure, so
+those features go flat or reverse sign.
+
+The single signal that does transfer is **reflectance as a percentile rank
+within its own cloud** (Pielach-trained, Inn-tested: AUC 0.958). Adding
+waveform features to it makes it worse, not better. A "universal" model would
+therefore be a reflectance-rank threshold with a network attached that
+actively harms it — which is not worth building, and is not what this library
+does.
+
+Use `fit()` per survey. Full measurements and method:
+**[context/cross_site_transfer.md](context/cross_site_transfer.md)**.
+
+Same thing from the command line:
+
+```bash
+python scripts/run_dataset.py data/Inn_DeepLearning --profile-only   # inspect first
+python scripts/run_dataset.py data/Inn_DeepLearning                  # classify with the pretrained weights
+python scripts/run_dataset.py data/Inn_DeepLearning --fit            # retrain for this site instead
+```
+
+Classification reads the shipped `models/` tree by default. `--fit` always
+writes into `runs/<dataset>/models/`, so retraining on one survey can never
+overwrite another's weights.
+
+All outputs (cached features, trained weights, labelled cloud, plots,
+`site_profile.json`, `metrics.json`) land under `runs/<dataset>/` — the
+repository-level `models/`, `pointclouds/` and `data_processed/` trees
+belong to Pielach and are never written to.
+
+## Configuration
+
+Every tunable that used to be a hardcoded module constant lives on
+`PipelineConfig` (`src/lidarwater/config.py`), grouped by stage:
+`ZoneConfig`, `FeatureConfig`, `WcnConfig`, `SurfaceConfig`,
+`BoundaryConfig`, `CanopyConfig`, `OutputConfig`, `RunConfig`. Defaults
+reproduce the values verified on the Pielach study area; override via
+`dataclasses.replace(...)` or by constructing a nested config directly, as
+in example 2 above.
+
+## Training
+
+`WaterPipeline.fit(cloud)` bootstraps and trains every model artifact from
+raw data (needs the `train` extra). It's slower and stochastic — intended
+for adapting the model to a new site, not routine use. See the `fit()`
+docstring in `src/lidarwater/pipeline.py` for the exact stage chain and one
+documented deviation from the original scripts (Phase 4 V8Net/XGBoost
+retraining is not reproduced; see `MIGRATION.md`).
+
+## Development
+
+```bash
+pip install -e ".[dev]"
+pytest
+```
+
+`pytest -m golden` runs slow parity tests against the real Pielach dataset
+and trained checkpoints (not run in CI — requires `data/` and `models/`,
+both gitignored).

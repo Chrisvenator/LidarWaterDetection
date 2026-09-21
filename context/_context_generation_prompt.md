@@ -188,7 +188,7 @@ import pandas as pd
 import numpy as np
 
 # Load point cloud
-pc = pd.read_csv('/home/chrisvenator/PycharmProjects/LidarWaterDetection/data/point_cloud_df.txt')
+pc = pd.read_csv('/home/chrisvenator/PycharmProjects/LidarWaterDetection/data/Pielach/point_cloud_df.txt')
 
 # Basic stats
 print(f"Number of points: {len(pc)}")
