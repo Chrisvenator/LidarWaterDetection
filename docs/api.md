@@ -169,6 +169,18 @@ Fields: `zones`, `features`, `wcn`, `surface`, `boundary`, `canopy`,
 | `plot_dir` | `None` | Reserved; currently unused (diagnostic plots were not ported) |
 | `device` | `"auto"` | `"auto"` / `"cpu"` / `"cuda"` for the torch stages |
 
+### BootstrapConfig — where the first labels come from
+
+| Field | Default | Meaning |
+|---|---|---|
+| `method` | `"zones"` | `"zones"` = absolute elevation bands (ZoneConfig); `"surface"` = elevation-free (coherent top sheet split by surface-layer reflectance). Set to `"surface"` by `derive_site_config` |
+| `cell_m` | 3.0 | Raster cell for the surface method |
+| `top_percentile` | 0.97 | Which z quantile counts as a cell's surface |
+| `surface_layer_m` | 0.15 | Points this close to the top define the cell's reflectance |
+| `coherence_max_m` | 0.15 | Max deviation from the neighbourhood sheet to count as a surface |
+| `sheet_filter_cells` | 7 | Median-filter width defining that neighbourhood |
+| `min_points_per_cell` | 5 | Cells sparser than this are unlabelled |
+
 ### ZoneConfig — elevation-band bootstrap labels (site-specific!)
 
 | Field | Default | Band meaning |
@@ -196,8 +208,17 @@ values — re-derive per site.
 | `grid_origin` | `"first_sample"` | Which sample maps to grid bin 0: `"first_sample"` for SVB-clustered records, `"first_return"` for full-range-gate digitisations. Set by `derive_site_config` |
 | `grid_noise_percentile` | 10.0 | Amplitude percentile taken as the noise floor (`first_return` only) |
 | `grid_return_frac` | 0.10 | Return starts at `floor + frac * (max - floor)` (`first_return` only) |
+| `noise_gate` | `False` | Drop samples at the digitiser noise floor, recovering the sparse echo-only record an SVB export produces. Set by `derive_site_config` for full-record digitisations |
+| `noise_gate_k` | 3.0 | Keep samples above `floor + k * (median - floor)` |
 
 ### WcnConfig
+
+| Field | Default | Meaning |
+|---|---|---|
+| `arch` | `WcnArchConfig()` | Transformer shape — baked into deployed checkpoints, do not change without retraining |
+| `train` | `WcnTrainConfig()` | Three-phase training hyperparameters (`fit()` only) |
+| `standardize` | `"artifact"` | Source of the scalar z-scoring stats. `"artifact"` uses the checkpoint's stored training-set mean/std; `"site"` recomputes from the cloud being classified. Set to `"site"` by `derive_site_config` for full-record sites, where the shipped stats saturate the network |
+
 
 `arch` (`WcnArchConfig`): `n_scalar=11, d_model=128, n_heads=8,
 n_layers=6, n_patches=50`. **Must match deployed checkpoints** — change
@@ -291,7 +312,7 @@ from lidarwater import derive_site_config, SiteProfile, Workspace
 
 `SiteProfile` fields: `n_points`, `water_level_z`, `z_shift_m`,
 `reflectance_shift_db`, `grid_origin`, `first_bin_energy_fraction`,
-`energy_concentration_gate`, `canopy_fraction_above_probe`,
+`energy_concentration_gate`, `full_record`, `canopy_fraction_above_probe`,
 `canopy_expected`. `profile.summary()`
 renders them as an aligned block.
 
@@ -303,6 +324,8 @@ What moves, and what does not:
 | Reflectance percentile matching the -15 dB Pielach gate | `SurfaceGridConfig.reflectance_max_db`, `ransac_reflectance_max_db`; `BedReconstructionConfig.reflectance_max_db` |
 | Waveform energy inside the first `grid_size` samples | `FeatureConfig.grid_origin` |
 | Percentile matching Pielach's 0.85 compact-waveform gate | `SurfaceGridConfig.energy_concentration_min` |
+| (always, for a derived site) | `BootstrapConfig.method` -> `"surface"` |
+| Whether the record is a full range-gate digitisation | `FeatureConfig.noise_gate`, `WcnConfig.standardize` |
 | Points above `CanopyConfig.probe_height_m` | Reported as `canopy_expected`; enforced inside the canopy stage |
 
 `WcnConfig` (architecture + training hyperparameters), dimensionless
@@ -310,9 +333,9 @@ ratios, and `grid_size` are never touched — the WCN input shape stays
 compatible with deployed checkpoints.
 
 `Workspace` members: `root`, `cache_dir`, `models_dir`, `pointclouds_dir`,
-`plot_dir`, `mkdirs()`, `resolver() -> LocalArtifactResolver`,
+`mkdirs()`, `resolver() -> LocalArtifactResolver`,
 `apply_to(config) -> PipelineConfig` (points `RunConfig.cache_dir` and
-`plot_dir` at the workspace, leaving stage selection and device alone).
+the feature cache at the workspace, leaving stage selection and device alone).
 
 ---
 

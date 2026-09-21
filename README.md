@@ -125,6 +125,30 @@ never touched. On the Pielach cloud the z and reflectance rebasing is an
 exact no-op; the compact-waveform gate is estimated from a sample of
 waveforms and lands at 0.845 against the 0.85 default.
 
+### One model per site — cross-site models do not work
+
+**A model fitted on one survey does not transfer to another, and this is
+measured, not assumed.** Waveform-only classification is excellent *within* a
+site (AUC 0.989 Pielach, 0.972 Inn) and no better than chance *across* sites
+(0.42-0.69 in both directions, with or without site-rank normalisation, with
+or without the features that differ most between the two exports).
+
+The cause is that waveform shape describes the scanner's processing chain as
+much as the water. Pielach's four most discriminative features are the
+gap/cluster family, which exists because its SVB export stores only samples
+around each echo; Inn's full-range-gate export has no such structure, so
+those features go flat or reverse sign.
+
+The single signal that does transfer is **reflectance as a percentile rank
+within its own cloud** (Pielach-trained, Inn-tested: AUC 0.958). Adding
+waveform features to it makes it worse, not better. A "universal" model would
+therefore be a reflectance-rank threshold with a network attached that
+actively harms it — which is not worth building, and is not what this library
+does.
+
+Use `fit()` per survey. Full measurements and method:
+**[context/cross_site_transfer.md](context/cross_site_transfer.md)**.
+
 Same thing from the command line:
 
 ```bash
