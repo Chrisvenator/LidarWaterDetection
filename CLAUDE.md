@@ -241,6 +241,10 @@ Inn against 192k hand-labelled points, and 93.1% -> 96.6% on the blind 65.
 Almost all residual error is abstention, not misclassification — of 7,502
 missed water points, 5,395 were labelled uncertain and only 2,107 land.
 
+`CleanupConfig.majority_filter` (default off) flips points contradicted by
+their neighbours; canopy is never moved. With both it and `resolve_uncertain`
+on, Inn reaches 99.3% against 192k hand labels and 98.3% on the blind 65.
+
 **Do not attempt a cross-site model.** Measured both directions: waveform-only
 transfer is chance (AUC 0.42-0.69) while within-site is 0.97-0.99, because
 Pielach's strongest features (`gap_ratio`, `n_gaps`, `n_clusters`,

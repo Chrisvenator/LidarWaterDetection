@@ -451,6 +451,31 @@ Water recall goes 94.9% -> 97.9% for 0.3 points of land precision. Keep the
 default if you want low-confidence points flagged for review; switch it on if
 you want a decision everywhere.
 
+### Speckle inside the channel
+
+Classification is point-by-point, so nothing in the pipeline uses the fact
+that water and land are contiguous. Single points that fall the wrong side of
+the decision threshold survive as isolated specks — on Inn those sit at the
+water surface (-0.04 m) with water's reflectance (-4.0 dB against land's
++0.8) and a median water probability of 0.42.
+
+```python
+config = dataclasses.replace(config, cleanup=dataclasses.replace(
+    config.cleanup, majority_filter=True))
+```
+
+or `--majority-filter`. Canopy is never moved — it is genuinely sparse and a
+spatial majority would erase it.
+
+| | full 192k labels | blind 65 points |
+|---|---|---|
+| as shipped | 97.4% | 93.1% |
+| `--resolve-uncertain` | 98.7% | 96.6% |
+| both flags | **99.3%** | **98.3%** |
+
+Off by default: it will also erase genuinely small features, which is a
+judgement for the caller.
+
 ## 10. Troubleshooting
 
 | Symptom | Cause / fix |

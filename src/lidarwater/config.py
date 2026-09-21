@@ -356,6 +356,29 @@ class CanopyConfig:
     min_canopy_frac: float = 0.002
 
 
+@dataclasses.dataclass(frozen=True)
+class CleanupConfig:
+    """Spatial regularisation of the final labels (off by default).
+
+    Nothing else in the pipeline uses the fact that water and land are
+    contiguous, so single points that fall the wrong side of the decision
+    threshold survive into the output as speckle inside the channel.
+    Measured on Inn against 192k hand-labelled points: 98.69% balanced
+    without, 99.27% with (k=20, 80%) — both classes improve, and ~1% of
+    points move. Off by default because it will also erase genuinely small
+    features, which is a judgement the caller should make.
+    """
+
+    majority_filter: bool = False
+    k: int = 20                     # neighbours consulted, in plan view
+    min_agreement: float = 0.80     # share that must disagree before a point flips
+
+    def __post_init__(self) -> None:
+        if not 0.5 < self.min_agreement <= 1.0:
+            raise ValueError(
+                f"min_agreement must be above 0.5 and at most 1.0, got {self.min_agreement}")
+
+
 class LabelScheme(str, Enum):
     """Output classification mapping. See lidarwater.io.las_writer."""
 
@@ -411,5 +434,6 @@ class PipelineConfig:
     surface: SurfaceConfig = dataclasses.field(default_factory=SurfaceConfig)
     boundary: BoundaryConfig = dataclasses.field(default_factory=BoundaryConfig)
     canopy: CanopyConfig = dataclasses.field(default_factory=CanopyConfig)
+    cleanup: CleanupConfig = dataclasses.field(default_factory=CleanupConfig)
     output: OutputConfig = dataclasses.field(default_factory=OutputConfig)
     run: RunConfig = dataclasses.field(default_factory=RunConfig)

@@ -288,6 +288,17 @@ energy_concentration_min=0.85, reflectance_max_db=-15.0`), `z_cap=261.0`,
 | `probe_height_m` | 3.0 | Height above the ground reference used to test whether the site has vegetation at all |
 | `min_canopy_frac` | 0.002 | Below this share of points above the probe, the site is canopy-free: both `predict()` and `fit()` return all-zero probabilities without loading or training a model |
 
+### CleanupConfig — spatial regularisation of the final labels
+
+| Field | Default | Meaning |
+|---|---|---|
+| `majority_filter` | `False` | Flip points whose label contradicts an overwhelming local majority. Canopy is never moved |
+| `k` | 20 | Neighbours consulted, in plan view |
+| `min_agreement` | 0.80 | Share of neighbours that must disagree before a point flips |
+
+Measured on Inn against 192k hand-labelled points: 98.69% balanced without,
+99.27% with. Both classes improve; ~1% of points move.
+
 ### OutputConfig
 
 | Field | Default | Meaning |

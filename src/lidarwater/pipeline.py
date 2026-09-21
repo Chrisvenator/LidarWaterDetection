@@ -12,7 +12,7 @@ from .artifacts import ArtifactResolver, LocalArtifactResolver
 from .config import DEFAULT_CLASSIFY_STAGES, DEFAULT_FIT_STAGES, PipelineConfig, Stage
 from .types import PipelineState, PointCloud
 
-from ._stages import autolabel, boundary, canopy, features, surface, wcn
+from ._stages import autolabel, boundary, canopy, cleanup, features, surface, wcn
 
 
 class WaterPipeline:
@@ -63,6 +63,8 @@ class WaterPipeline:
             canopy.predict(state, self.config.canopy, self.artifacts)
         if Stage.MERGE in requested:
             canopy.merge(state)
+            if self.config.cleanup.majority_filter:
+                cleanup.majority_filter(state, self.config.cleanup)
         if Stage.BOUNDARY in requested:
             boundary.run(state, self.config.boundary)
         return state
@@ -102,6 +104,8 @@ class WaterPipeline:
             canopy.fit(state, self.config.canopy, self.artifacts)
         if Stage.MERGE in requested:
             canopy.merge(state)
+            if self.config.cleanup.majority_filter:
+                cleanup.majority_filter(state, self.config.cleanup)
         if Stage.BOUNDARY in requested:
             boundary.run(state, self.config.boundary)
         return state

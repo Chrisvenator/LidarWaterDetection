@@ -52,6 +52,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--resolve-uncertain", action="store_true",
                    help="decide the uncertain class by the model's own probability "
                         "instead of emitting it (measured +1.3 balanced points on Inn)")
+    p.add_argument("--majority-filter", action="store_true",
+                   help="flip points whose label contradicts their neighbours "
+                        "(measured +0.6 balanced points on Inn)")
     p.add_argument("--device", default="auto", choices=("auto", "cpu", "cuda"))
     return p.parse_args()
 
@@ -92,6 +95,9 @@ def main() -> int:
     config, profile = derive_site_config(cloud)
     config = workspace.apply_to(config)
     config = _with_device(config, args.device)
+    if args.majority_filter:
+        config = dataclasses.replace(config, cleanup=dataclasses.replace(
+            config.cleanup, majority_filter=True))
     if args.resolve_uncertain:
         config = dataclasses.replace(config, surface=dataclasses.replace(
             config.surface, resolve_uncertain=True))

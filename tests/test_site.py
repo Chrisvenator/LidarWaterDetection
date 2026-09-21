@@ -534,3 +534,76 @@ def test_resolve_uncertain_requires_probabilities():
     with pytest.raises(ValueError, match="needs water_proba"):
         classify_points(feat, np.array([False, False]), np.zeros(2),
                         np.array([2, 2], dtype=np.int8), config.surface)
+
+
+# ── spatial cleanup ──────────────────────────────────────────────────────────
+
+def _speckled_labels(n_side: int = 40, seed: int = 3):
+    """A solid water field with isolated land specks punched into it."""
+    rng = np.random.default_rng(seed)
+    gx, gy = np.meshgrid(np.arange(n_side), np.arange(n_side))
+    xy = np.column_stack([gx.ravel(), gy.ravel()]).astype(float)
+    labels = np.ones(len(xy), dtype=np.int8)
+    speck = rng.choice(len(xy), size=len(xy) // 50, replace=False)
+    labels[speck] = 0
+    return xy, labels, speck
+
+
+def _state_with(xy, labels):
+    from lidarwater import PointCloud
+    from lidarwater.types import PipelineState
+
+    n = len(xy)
+    cloud = PointCloud(
+        xyz=np.column_stack([xy, np.zeros(n)]),
+        reflectance_db=np.zeros(n, np.float32),
+        waveform_times=np.zeros(0, np.int32), waveform_amps=np.zeros(0, np.float32),
+        waveform_offsets=np.zeros(n + 1, np.int64))
+    state = PipelineState(cloud=cloud)
+    state.final_label = labels.copy()
+    return state
+
+
+def test_majority_filter_removes_isolated_specks():
+    from lidarwater._stages.cleanup import majority_filter
+    from lidarwater.config import CleanupConfig
+
+    xy, labels, speck = _speckled_labels()
+    state = _state_with(xy, labels)
+    majority_filter(state, CleanupConfig(majority_filter=True))
+
+    assert (state.final_label[speck] == 1).all(), "isolated land should become water"
+    assert state.metrics["cleanup"]["points_moved"] == len(speck)
+
+
+def test_majority_filter_keeps_a_coherent_region():
+    """A real feature must survive; only contradicted points move."""
+    from lidarwater._stages.cleanup import majority_filter
+    from lidarwater.config import CleanupConfig
+
+    xy, labels, _ = _speckled_labels()
+    bar = (xy[:, 0] > 25) & (xy[:, 1] > 25)          # a solid land block
+    labels[bar] = 0
+    state = _state_with(xy, labels)
+    majority_filter(state, CleanupConfig(majority_filter=True))
+
+    interior = bar & (xy[:, 0] > 28) & (xy[:, 1] > 28)
+    assert (state.final_label[interior] == 0).all(), "a coherent land region must survive"
+
+
+def test_majority_filter_never_moves_canopy():
+    from lidarwater._stages.cleanup import majority_filter
+    from lidarwater.config import CleanupConfig
+
+    xy, labels, speck = _speckled_labels()
+    labels[speck] = 4                                 # isolated canopy, not land
+    state = _state_with(xy, labels)
+    majority_filter(state, CleanupConfig(majority_filter=True))
+    assert (state.final_label[speck] == 4).all()
+
+
+def test_cleanup_config_rejects_a_majority_below_half():
+    from lidarwater.config import CleanupConfig
+
+    with pytest.raises(ValueError, match="must be above 0.5"):
+        CleanupConfig(min_agreement=0.4)
