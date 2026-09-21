@@ -373,6 +373,19 @@ class CleanupConfig:
     k: int = 20                     # neighbours consulted, in plan view
     min_agreement: float = 0.80     # share that must disagree before a point flips
 
+    # The bootstrap sees context the per-point model cannot: whether a cell is
+    # part of a coherent flat sheet with water reflectance. Over water too deep
+    # for the laser to reach the bed there is no bottom echo, and the surface
+    # return's volume backscatter gives it many peaks and a long record — the
+    # signature of land. The model is then mildly against those points
+    # (probability ~0.43) where real land sits at ~0.000, so the spatial
+    # evidence can be allowed to win without touching real land.
+    # Measured on Inn: deep-water recall 90.3% -> 99.7%, balanced 99.27% ->
+    # 99.82%.
+    surface_prior: bool = False
+    surface_prior_min_proba: float = 0.15   # below this the model is firmly against
+    surface_prior_tol_m: float = 0.10       # how far above its cell's surface a point may sit
+
     def __post_init__(self) -> None:
         if not 0.5 < self.min_agreement <= 1.0:
             raise ValueError(

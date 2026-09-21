@@ -476,6 +476,30 @@ spatial majority would erase it.
 Off by default: it will also erase genuinely small features, which is a
 judgement for the caller.
 
+### Deep water
+
+Where the water is too deep for the green laser to reach the bed there is no
+bottom echo, and the surface return's volume backscatter gives it many peaks
+over a long record — the signature `CLAUDE.md` documents as *land*. The
+per-point model duly calls it land; measured on Inn it got 90.3% of a
+hand-segmented deep reach right against 98.7% elsewhere.
+
+The bootstrap gets these right (99.3%) because it works per cell and can see
+that the cell is part of a coherent flat sheet with water reflectance —
+context a per-point model has no access to. `--surface-prior` lets that
+evidence win, but only where the model is *mildly* against: these points
+score ~0.43 while real land scores ~0.000, so a floor at 0.15 separates them.
+
+| | water | land | balanced | deep reach |
+|---|---|---|---|---|
+| without | 98.68% | 99.86% | 99.27% | 90.3% |
+| with | 99.94% | 99.71% | **99.82%** | **99.7%** |
+
+Note what does *not* work: penetration (returns beneath the surface) cannot
+identify deep water, because the whole problem is that nothing comes back
+from the bed — the deep reach measures zero penetration. Nor can elevation,
+since land also sits at its own cell's top surface.
+
 ## 10. Troubleshooting
 
 | Symptom | Cause / fix |

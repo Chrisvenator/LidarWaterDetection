@@ -63,6 +63,8 @@ class WaterPipeline:
             canopy.predict(state, self.config.canopy, self.artifacts)
         if Stage.MERGE in requested:
             canopy.merge(state)
+            if self.config.cleanup.surface_prior:
+                cleanup.apply_surface_prior(state, self.config.cleanup, self.config.bootstrap)
             if self.config.cleanup.majority_filter:
                 cleanup.majority_filter(state, self.config.cleanup)
         if Stage.BOUNDARY in requested:
@@ -104,6 +106,8 @@ class WaterPipeline:
             canopy.fit(state, self.config.canopy, self.artifacts)
         if Stage.MERGE in requested:
             canopy.merge(state)
+            if self.config.cleanup.surface_prior:
+                cleanup.apply_surface_prior(state, self.config.cleanup, self.config.bootstrap)
             if self.config.cleanup.majority_filter:
                 cleanup.majority_filter(state, self.config.cleanup)
         if Stage.BOUNDARY in requested:

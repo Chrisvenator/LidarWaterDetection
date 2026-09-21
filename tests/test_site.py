@@ -607,3 +607,61 @@ def test_cleanup_config_rejects_a_majority_below_half():
 
     with pytest.raises(ValueError, match="must be above 0.5"):
         CleanupConfig(min_agreement=0.4)
+
+
+# ── surface prior ────────────────────────────────────────────────────────────
+
+def _deep_water_state():
+    """A flat water sheet the model mildly rejects, beside land it rejects hard."""
+    from lidarwater._stages import features
+    from lidarwater.config import BootstrapConfig, BOOTSTRAP_SURFACE
+
+    rng = np.random.default_rng(5)
+    n = 6000
+    x = rng.uniform(0, 60, n); y = rng.uniform(0, 60, n)
+    is_land = x > 40
+    z = np.full(n, 380.75) + rng.normal(0, 0.01, n)
+    reflectance = np.where(is_land, 6.0, -5.0) + rng.normal(0, 0.4, n)
+    times = [np.arange(20)] * n
+    amps = [np.array([0, 0, 200, 800, 600, 150] + [0] * 14, float)] * n
+    cloud = PointCloud.from_dataframe(
+        pd.DataFrame({"x": x, "y": y, "z": z, "reflectance_dB": reflectance}),
+        pd.DataFrame({"Time [SI]": times, "Amplitude [ADC]": amps}))
+
+    state = features.run(cloud, PipelineConfig().features)
+    # the model rejects everything, but only mildly over water
+    state.wcn_proba = np.where(is_land, 0.0, 0.42).astype(np.float32)
+    state.final_label = np.zeros(n, dtype=np.int8)
+    return state, is_land, BootstrapConfig(method=BOOTSTRAP_SURFACE)
+
+
+def test_surface_prior_restores_water_the_model_only_mildly_rejects():
+    from lidarwater._stages.cleanup import apply_surface_prior
+    from lidarwater.config import CleanupConfig
+
+    state, is_land, boot = _deep_water_state()
+    apply_surface_prior(state, CleanupConfig(surface_prior=True), boot)
+
+    assert (state.final_label[~is_land] == 1).mean() > 0.9, "water should be restored"
+    assert (state.final_label[is_land] == 0).all(), "land must be untouched"
+
+
+def test_surface_prior_leaves_land_alone_when_the_model_is_firm():
+    """A probability floor is what keeps this from eroding banks."""
+    from lidarwater._stages.cleanup import apply_surface_prior
+    from lidarwater.config import CleanupConfig
+
+    state, _, boot = _deep_water_state()
+    state.wcn_proba = np.zeros_like(state.wcn_proba)     # model firmly against everything
+    apply_surface_prior(state, CleanupConfig(surface_prior=True), boot)
+    assert state.metrics["surface_prior"]["points_restored"] == 0
+
+
+def test_surface_prior_never_overrides_canopy():
+    from lidarwater._stages.cleanup import apply_surface_prior
+    from lidarwater.config import CleanupConfig
+
+    state, is_land, boot = _deep_water_state()
+    state.final_label = np.full(len(state.final_label), 4, dtype=np.int8)
+    apply_surface_prior(state, CleanupConfig(surface_prior=True), boot)
+    assert (state.final_label == 4).all()

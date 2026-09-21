@@ -295,6 +295,9 @@ energy_concentration_min=0.85, reflectance_max_db=-15.0`), `z_cap=261.0`,
 | `majority_filter` | `False` | Flip points whose label contradicts an overwhelming local majority. Canopy is never moved |
 | `k` | 20 | Neighbours consulted, in plan view |
 | `min_agreement` | 0.80 | Share of neighbours that must disagree before a point flips |
+| `surface_prior` | `False` | Restore water the per-point model rejected but the surface evidence backs — water too deep for the laser to reach the bed |
+| `surface_prior_min_proba` | 0.15 | Floor on the model's probability; real land scores ~0.000, so this keeps banks intact |
+| `surface_prior_tol_m` | 0.10 | How far above its cell's surface a point may sit and still qualify |
 
 Measured on Inn against 192k hand-labelled points: 98.69% balanced without,
 99.27% with. Both classes improve; ~1% of points move.

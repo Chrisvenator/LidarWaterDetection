@@ -245,6 +245,14 @@ missed water points, 5,395 were labelled uncertain and only 2,107 land.
 their neighbours; canopy is never moved. With both it and `resolve_uncertain`
 on, Inn reaches 99.3% against 192k hand labels and 98.3% on the blind 65.
 
+`CleanupConfig.surface_prior` (default off) restores water the per-point model
+rejects over reaches too deep for a bed echo: volume backscatter gives those
+surface returns many peaks and a long record, i.e. the land signature. The
+bootstrap gets them right (99.3%) from cell context the model cannot see, and
+a probability floor of 0.15 keeps real land (~0.000) untouched. With all three
+optional flags, Inn reaches 99.9% against 208k hand labels and 100% on the
+blind 65.
+
 **Do not attempt a cross-site model.** Measured both directions: waveform-only
 transfer is chance (AUC 0.42-0.69) while within-site is 0.97-0.99, because
 Pielach's strongest features (`gap_ratio`, `n_gaps`, `n_clusters`,
