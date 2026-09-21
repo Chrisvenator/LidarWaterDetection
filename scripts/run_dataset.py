@@ -49,6 +49,9 @@ def parse_args() -> argparse.Namespace:
                    help=f"model directory to classify with (default: {PRETRAINED_MODELS.name}/)")
     p.add_argument("--profile-only", action="store_true",
                    help="report the derived site profile and config, then exit")
+    p.add_argument("--resolve-uncertain", action="store_true",
+                   help="decide the uncertain class by the model's own probability "
+                        "instead of emitting it (measured +1.3 balanced points on Inn)")
     p.add_argument("--device", default="auto", choices=("auto", "cpu", "cuda"))
     return p.parse_args()
 
@@ -89,6 +92,9 @@ def main() -> int:
     config, profile = derive_site_config(cloud)
     config = workspace.apply_to(config)
     config = _with_device(config, args.device)
+    if args.resolve_uncertain:
+        config = dataclasses.replace(config, surface=dataclasses.replace(
+            config.surface, resolve_uncertain=True))
 
     print(f"\nsite profile — {args.dataset.name}\n{profile.summary()}")
     if args.profile_only:

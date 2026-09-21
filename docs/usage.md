@@ -428,6 +428,29 @@ Caveats, honestly stated:
   labels from `ZoneConfig`'s absolute elevation bands, which are Pielach's
   unless rebased.
 
+### The uncertain class
+
+`final_label == 2` marks points the two model heads disagree on, or that fall
+outside the river footprint. It is a genuine confidence signal and is emitted
+by default — but any consumer that treats it as "not water" pays for it.
+
+```python
+config = dataclasses.replace(config, surface=dataclasses.replace(
+    config.surface, resolve_uncertain=True))
+```
+
+or `--resolve-uncertain` on `run_dataset.py`. Each abstention is then decided
+by its own water probability. Measured on Inn:
+
+| | full 192k hand labels | blind 65 points |
+|---|---|---|
+| emitting uncertain | 97.4% | 93.1% |
+| resolving it | **98.7%** | **96.6%** |
+
+Water recall goes 94.9% -> 97.9% for 0.3 points of land precision. Keep the
+default if you want low-confidence points flagged for review; switch it on if
+you want a decision everywhere.
+
 ## 10. Troubleshooting
 
 | Symptom | Cause / fix |

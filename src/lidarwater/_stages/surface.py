@@ -210,7 +210,8 @@ def build_surface_grid(feat_df: pd.DataFrame, xgb_proba: np.ndarray, deep_proba:
 
 def classify_points(feat_df: pd.DataFrame, in_footprint: np.ndarray, local_surface_z: np.ndarray,
                     wf_ensemble: np.ndarray, config: SurfaceConfig, *,
-                    surface_measured: np.ndarray | None = None) -> np.ndarray:
+                    surface_measured: np.ndarray | None = None,
+                    water_proba: np.ndarray | None = None) -> np.ndarray:
     """Merge geometry (footprint + local surface) with the ML ensemble label.
 
     Inside the footprint, submerged points trust geometry unless the
@@ -247,6 +248,12 @@ def classify_points(feat_df: pd.DataFrame, in_footprint: np.ndarray, local_surfa
     merged[outside & (wf_ensemble == LABEL_LAND)] = LABEL_LAND
     merged[outside & (wf_ensemble == LABEL_WATER)] = LABEL_UNCERTAIN
     merged[outside & (wf_ensemble == LABEL_UNCERTAIN)] = LABEL_UNCERTAIN
+
+    if config.resolve_uncertain:
+        if water_proba is None:
+            raise ValueError("resolve_uncertain=True needs water_proba to decide with")
+        undecided = merged == LABEL_UNCERTAIN
+        merged[undecided] = np.where(water_proba[undecided] >= 0.5, LABEL_WATER, LABEL_LAND)
     return merged
 
 
@@ -363,7 +370,8 @@ def run(state: PipelineState, config: SurfaceConfig, *, geometry_only: bool = Tr
     surface_measured = primary_mask[yi, xi]
 
     merged_label = classify_points(feat_df, in_footprint, local_surface_z, ensemble, config,
-                                   surface_measured=surface_measured)
+                                   surface_measured=surface_measured,
+                                   water_proba=deep_proba)
 
     if config.bed.enabled:
         bed_grid, bed_coverage = build_riverbed_grid(

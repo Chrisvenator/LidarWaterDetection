@@ -298,6 +298,14 @@ class SurfaceConfig:
     # widen the tolerance and let the model decide.
     fallback_tol_m: float = 0.30   # default: same as water_tol_m, i.e. no change
 
+    # The uncertain class (2) marks points the two model heads disagree on, or
+    # that sit outside the footprint. It is a real signal, so it is emitted by
+    # default — but consumers that treat it as "not water" pay for it. Measured
+    # on Inn against 192k hand-labelled points: emitting it scores 97.4%
+    # balanced, resolving it by the model's own probability scores 98.7%
+    # (water recall 94.9% -> 97.9%, land 99.8% -> 99.5%).
+    resolve_uncertain: bool = False
+
 
 @dataclasses.dataclass(frozen=True)
 class BoundaryConfig:

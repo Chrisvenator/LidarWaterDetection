@@ -235,6 +235,12 @@ Outputs go to `runs/<dataset>/` (`Workspace`), never into the repo-level
   there is no water hidden under them, and on Inn it was inventing 17.9% of the
   cloud as a class the site does not contain.
 
+`SurfaceConfig.resolve_uncertain` (default off) decides class 2 by the model's
+own probability instead of emitting it: 97.4% -> 98.7% balanced accuracy on
+Inn against 192k hand-labelled points, and 93.1% -> 96.6% on the blind 65.
+Almost all residual error is abstention, not misclassification — of 7,502
+missed water points, 5,395 were labelled uncertain and only 2,107 land.
+
 **Do not attempt a cross-site model.** Measured both directions: waveform-only
 transfer is chance (AUC 0.42-0.69) while within-site is 0.97-0.99, because
 Pielach's strongest features (`gap_ratio`, `n_gaps`, `n_clusters`,
