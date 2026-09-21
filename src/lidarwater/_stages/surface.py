@@ -117,7 +117,8 @@ def build_surface_grid(feat_df: pd.DataFrame, xgb_proba: np.ndarray, deep_proba:
     tier-1 anchor, falling back to a global RANSAC plane for empty/distant
     cells, Gaussian-smoothed with an upper cap on fallback cells only.
 
-    Returns grid_z, x_min, y_min, n_x, n_y, xi, yi, plane_coef, grid_z_pre_cap.
+    Returns grid_z, x_min, y_min, n_x, n_y, xi, yi, plane_coef, grid_z_pre_cap,
+    primary_cell_mask (True where the cell was measured, not plane-filled).
     """
     sg = config.surface_grid
     x_all, y_all, z_all = feat_df["x"].values, feat_df["y"].values, feat_df["z"].values
@@ -134,6 +135,17 @@ def build_surface_grid(feat_df: pd.DataFrame, xgb_proba: np.ndarray, deep_proba:
                 & (feat_df["n_peaks"].values <= _RANSAC_N_PEAKS_MAX)
                 & (feat_df["energy_concentration"].values > sg.energy_concentration_min)
                 & (feat_df["reflectance_dB"].values < sg.ransac_reflectance_max_db))
+
+    if not surf_cand.any():
+        raise ValueError(
+            "no water-surface candidates for the RANSAC plane fit: no point passed "
+            f"all of conf>={_RANSAC_CANDIDATE_CONF_MIN}, z in "
+            f"[{sg.ransac_z_lo}, {sg.ransac_z_hi}], n_peaks<={_RANSAC_N_PEAKS_MAX}, "
+            f"energy_concentration>{sg.energy_concentration_min}, "
+            f"reflectance_dB<{sg.ransac_reflectance_max_db}. "
+            "On a new site run derive_site_config() to rebase these; if it already ran, "
+            "the water model's probabilities are too low to anchor the surface."
+        )
 
     ransac = RANSACRegressor(
         estimator=LinearRegression(), residual_threshold=sg.ransac_residual_m,
@@ -192,11 +204,13 @@ def build_surface_grid(feat_df: pd.DataFrame, xgb_proba: np.ndarray, deep_proba:
     grid_z_smooth = np.where(
         cap_mask, np.minimum(grid_z_smooth, ransac_grid + sg.ransac_max_rise_m), grid_z_smooth)
 
-    return grid_z_smooth, x_min, y_min, n_x, n_y, xi, yi, plane_coef, grid_z_pre_cap
+    return (grid_z_smooth, x_min, y_min, n_x, n_y, xi, yi, plane_coef,
+            grid_z_pre_cap, primary_cell_mask)
 
 
 def classify_points(feat_df: pd.DataFrame, in_footprint: np.ndarray, local_surface_z: np.ndarray,
-                    wf_ensemble: np.ndarray, config: SurfaceConfig) -> np.ndarray:
+                    wf_ensemble: np.ndarray, config: SurfaceConfig, *,
+                    surface_measured: np.ndarray | None = None) -> np.ndarray:
     """Merge geometry (footprint + local surface) with the ML ensemble label.
 
     Inside the footprint, submerged points trust geometry unless the
@@ -210,9 +224,17 @@ def classify_points(feat_df: pd.DataFrame, in_footprint: np.ndarray, local_surfa
     z_diff = z - local_surface_z
     merged = np.full(len(z), LABEL_UNCERTAIN, dtype=np.int8)
 
+    # How far above the estimated surface a point may sit and still be judged
+    # on its waveform. Wider where that estimate was interpolated from a
+    # global plane rather than measured, because there the error is the
+    # surface's, not the point's.
+    tolerance = np.full(len(z), config.water_tol_m, dtype=np.float32)
+    if surface_measured is not None:
+        tolerance[~surface_measured] = max(config.water_tol_m, config.fallback_tol_m)
+
     submerged = in_footprint & (z_diff < 0.0)
-    near_surface = in_footprint & (z_diff >= 0.0) & (z_diff <= config.water_tol_m)
-    above_surf = in_footprint & (z_diff > config.water_tol_m)
+    near_surface = in_footprint & (z_diff >= 0.0) & (z_diff <= tolerance)
+    above_surf = in_footprint & (z_diff > tolerance)
 
     merged[submerged & (wf_ensemble != LABEL_LAND)] = LABEL_WATER
     merged[submerged & (wf_ensemble == LABEL_LAND)] = LABEL_LAND
@@ -334,17 +356,22 @@ def run(state: PipelineState, config: SurfaceConfig, *, geometry_only: bool = Tr
         feat_df, xgb_proba, deep_proba, config, geometry_only=geometry_only, ensemble=ensemble)
     in_footprint = contains_xy(footprint, feat_df["x"].values, feat_df["y"].values)
 
-    grid_z, x_min, y_min, n_x, n_y, xi, yi, plane_coef, _ = build_surface_grid(
+    grid_z, x_min, y_min, n_x, n_y, xi, yi, plane_coef, _, primary_mask = build_surface_grid(
         feat_df, xgb_proba, deep_proba, config, geometry_only=geometry_only,
         tier1_xy=tier1_xy, ensemble=ensemble)
     local_surface_z = grid_z[yi, xi].astype(np.float32)
+    surface_measured = primary_mask[yi, xi]
 
-    merged_label = classify_points(feat_df, in_footprint, local_surface_z, ensemble, config)
+    merged_label = classify_points(feat_df, in_footprint, local_surface_z, ensemble, config,
+                                   surface_measured=surface_measured)
 
-    bed_grid, bed_coverage = build_riverbed_grid(
-        feat_df, merged_label, deep_proba, x_min, y_min, n_x, n_y, xi, yi, config)
-    reconstructed_label = apply_waterbed_reconstruction(
-        feat_df, merged_label, local_surface_z, bed_grid, bed_coverage, xi, yi, config)
+    if config.bed.enabled:
+        bed_grid, bed_coverage = build_riverbed_grid(
+            feat_df, merged_label, deep_proba, x_min, y_min, n_x, n_y, xi, yi, config)
+        reconstructed_label = apply_waterbed_reconstruction(
+            feat_df, merged_label, local_surface_z, bed_grid, bed_coverage, xi, yi, config)
+    else:
+        reconstructed_label = merged_label.copy()   # no canopy to hide water under
 
     state.footprint_geom = footprint
     state.footprint_raw_hull = raw_hull

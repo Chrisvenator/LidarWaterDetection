@@ -263,7 +263,7 @@ the compact-waveform gate estimates 0.845 against the 0.85 default;
 `dataclasses.replace` afterwards — the derived config is an ordinary
 `PipelineConfig`.
 
-### Three things it handles that would otherwise fail silently
+### Six things it handles that would otherwise fail silently
 
 **Full-record waveforms.** SVB-clustered exports (Pielach) store only
 samples around each echo, so `times[0]` *is* the first return. Other
@@ -286,6 +286,71 @@ rebased to the value passing the same share of the cloud (0.294 on Inn),
 which restores 13,481 candidates. Note this rebases the *threshold*, not
 the window — on a site with a very different pulse length the feature's
 discriminative power is reduced even once the gate is corrected.
+
+**Full-record noise pedestal.** A full-range-gate digitisation stores every
+sample, so ~80% of each record is digitiser noise sitting well above zero.
+The gap, cluster and occupancy features then describe the *recording format*
+rather than the returns, and the WCN's occupancy-mask input channel — which
+on an SVB export marks where the echo clusters are — becomes all-ones and
+carries no information. `FeatureConfig.noise_gate` drops samples at the
+noise floor, recovering the sparse echo-only form. Measured on Inn, this
+pulled `n_gaps` from +4.86 sigma of the Pielach training distribution to
+-0.81, `n_clusters` likewise, and `energy_ratio_late` from +3.02 to +0.66.
+
+`WcnConfig.standardize="site"` is a companion mitigation, not a fix. The
+checkpoint ships its training set's scalar mean/std, which is a property of
+that survey; applying it to another site pushed 25.6% of Inn's feature
+values beyond 3 sigma and saturated the network to 97.6% water. Recomputing
+from the cloud under test restores dynamic range (68.6% water, and a real
+probability spread rather than a wall of 1.0). It does **not** restore
+accuracy: the transformer and XGBoost heads still agree on only 39% of Inn
+points either way, because both learned their decision boundaries in
+Pielach-normalised coordinates. Cross-site inference is a smoke test; use
+`fit()` for results.
+
+**Labels that secretly encode elevation.** This is the one that matters most.
+Every label in the pipeline descends from `create_labels(z, zones)`, which
+takes `z` and nothing else. The WCN never uses elevation as a *feature*, but
+elevation is its entire *teaching signal* — so it learns to reproduce an
+elevation rule from waveforms, and succeeds: on Inn it reached F1 0.992
+against its own bootstrap, and **97.68% of the final output is reproduced by
+the single rule `z < 380.44 m`**. Where elevation genuinely separates water
+from land that is harmless. Where it does not, the model is confidently
+wrong rather than randomly wrong, which is worse: retraining on the z-bands
+*lowered* accuracy against hand-labelled points from 74.8% to 59.0%.
+
+`BootstrapConfig(method="surface")` removes absolute elevation from the
+bootstrap entirely — rasterise, take each cell's top surface, keep the cells
+whose top agrees with their neighbours' (a coherent sheet), and split those
+by the median reflectance of the surface layer alone. Only *relative* height
+within a cell is used. Against hand-labelled points on Inn:
+
+| bootstrap | water | land | balanced |
+|---|---|---|---|
+| `"zones"` (elevation bands) | 27.6% | 80.6% | 54.1% |
+| `"surface"` | 100% | 94.4% | **97.2%** |
+
+Two things make it work, and both are easy to get wrong. Isolating the
+surface layer is what makes the reflectance histogram bimodal: over *all*
+points the deepest Otsu valley falls inside the water mode (-7.10 dB, 61.0%),
+while over surface layers it lands at -0.46 dB and 97.2% — within 0.7 dB of
+the hand-labelled optimum, with no labels used. And flatness alone is not
+enough, because a gravel bar is also a flat coherent sheet: cell-wise
+flatness gives 100% water recall but only ~40% on land, and *per-point*
+planarity is actively backwards (water 0.61, land 0.73, because a k-NN ball
+around a water point also catches riverbed returns beneath it).
+
+**Site-specific signal the shipped model cannot use.** WCN v9's 11 scalar
+features are dimensionless by design; `reflectance_dB` is excluded because its
+dB scale belongs to the scanner and the survey. That is right for a model meant
+to travel, and wrong for one fitted to a single site — on Inn, reflectance
+alone separates water from land at AUC 0.973 (against 0.924 for all 11 waveform
+features; 0.983 together), and a single threshold at +0.25 dB reproduces 97.2%
+of hand-labelled points. `derive_site_config` therefore appends it to
+`WcnConfig.scalar_features`, taking `arch.n_scalar` from 11 to 12.
+`wcn.predict` reads the feature list from the checkpoint's stats file rather
+than the config, so the shipped 11-feature model still loads unchanged and a
+site-fitted 12-feature one round-trips.
 
 **Sites without vegetation.** The canopy stage checks how much of the cloud
 stands more than `CanopyConfig.probe_height_m` above the water-aware ground
@@ -324,6 +389,15 @@ survey-specific filenames (`point_cloud_df_inn.txt`) need no extra
 argument.
 
 ## 9. Train on a new site (`fit()`)
+
+> **Fit once per survey.** Models do not transfer between sites. Waveform-only
+> classification reaches AUC 0.989 (Pielach) and 0.972 (Inn) *within* a site,
+> and 0.42-0.69 *across* them — chance, in both directions, and unchanged by
+> site-rank normalisation or by dropping the most site-dependent features.
+> Waveform shape encodes the scanner's processing chain, not only the water.
+> The one transferable signal is reflectance percentile rank, and adding
+> waveform features to it degrades it. See
+> [context/cross_site_transfer.md](../context/cross_site_transfer.md).
 
 ```python
 pipeline = WaterPipeline.from_local_models("my_models/")   # empty dir is fine

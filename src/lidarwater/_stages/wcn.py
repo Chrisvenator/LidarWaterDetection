@@ -10,6 +10,7 @@ pipeline, so exact numeric parity isn't guaranteed the way ``predict`` is.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 
 import numpy as np
@@ -19,14 +20,10 @@ from sklearn.metrics import f1_score
 
 from .._models._torch_optional import require_torch
 from ..artifacts import ArtifactId, ArtifactResolver
-from ..config import WcnConfig
+from ..config import STANDARDIZE_SITE, WCN_SCALAR_FEATURES, WcnConfig
 from ..types import PipelineState
 
-SCALAR_FEATURES = [
-    "energy_concentration", "max_amp_norm_by_energy", "energy_ratio_late",
-    "active_bins_ratio", "peak_amp_ratio", "gap_ratio", "energy_center_norm",
-    "n_peaks", "n_gaps", "n_clusters", "depth_proxy_m",
-]
+SCALAR_FEATURES = list(WCN_SCALAR_FEATURES)
 
 
 def _select_device(device: str):
@@ -36,8 +33,8 @@ def _select_device(device: str):
     return torch.device(device)
 
 
-def _scalars(features: pd.DataFrame) -> np.ndarray:
-    return features[SCALAR_FEATURES].values.astype(np.float32)
+def _scalars(features: pd.DataFrame, columns=None) -> np.ndarray:
+    return features[list(columns or SCALAR_FEATURES)].values.astype(np.float32)
 
 
 def _normalise_scalars(scalars: np.ndarray, stats: dict | None = None):
@@ -89,8 +86,17 @@ def predict(state: PipelineState, config: WcnConfig, resolver: ArtifactResolver,
 
     stats_path = resolver.resolve(ArtifactId.WCN_STATS)
     stats = json.loads(stats_path.read_text())
-    scalars_norm, _ = _normalise_scalars(_scalars(state.features), stats=stats["scalar_stats"])
+    # The checkpoint declares which features it was trained on; trust that over
+    # the config, so a site-specific model with extra features round-trips.
+    trained_on = stats.get("scalar_features", SCALAR_FEATURES)
+    from_site = config.standardize == STANDARDIZE_SITE
+    scalars_norm, _ = _normalise_scalars(
+        _scalars(state.features, trained_on),
+        stats=None if from_site else stats["scalar_stats"])
 
+    config = dataclasses.replace(
+        config, scalar_features=tuple(trained_on),
+        arch=dataclasses.replace(config.arch, n_scalar=len(trained_on)))
     model = _build_model(config, device)
     model.load_state_dict(torch.load(resolver.resolve(ArtifactId.WCN_REFINED),
                                      map_location=device, weights_only=True))
@@ -107,6 +113,7 @@ def predict(state: PipelineState, config: WcnConfig, resolver: ArtifactResolver,
     state.wcn_proba = wcn_proba
     state.wcn_xgb_proba = xgb_proba
     state.metrics["wcn"] = {
+        "standardize": config.standardize,
         "water_fraction_wcn": float((wcn_proba >= 0.5).mean()),
         "water_fraction_xgb": float((xgb_proba >= 0.5).mean()),
     }
@@ -332,7 +339,8 @@ def fit(state: PipelineState, config: WcnConfig, resolver: ArtifactResolver,
     np.random.seed(train_cfg.seed)
     device = _select_device(device)
 
-    scalars_norm, scalar_stats = _normalise_scalars(_scalars(state.features))
+    scalars_norm, scalar_stats = _normalise_scalars(
+        _scalars(state.features, config.scalar_features))
     weights = np.where(bootstrap_labels == 1, bootstrap_confidence, 1.0).astype(np.float32)
 
     model = _build_model(config, device)
@@ -348,7 +356,7 @@ def fit(state: PipelineState, config: WcnConfig, resolver: ArtifactResolver,
     xgb_model.save_model(resolver.resolve_for_write(ArtifactId.WCN_XGB))
     stats_path = resolver.resolve_for_write(ArtifactId.WCN_STATS)
     stats_path.write_text(json.dumps({
-        "scalar_stats": scalar_stats, "scalar_features": SCALAR_FEATURES,
+        "scalar_stats": scalar_stats, "scalar_features": list(config.scalar_features),
         **p2_metrics, **p3_metrics,
     }, indent=2))
 

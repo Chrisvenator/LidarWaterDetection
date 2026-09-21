@@ -26,6 +26,7 @@ sys.path.insert(0, str(ROOT / "src"))
 from lidarwater import Workspace, WaterPipeline, derive_site_config   # noqa: E402
 from lidarwater.artifacts import LocalArtifactResolver                # noqa: E402
 from lidarwater.io import read_dataset_dir                            # noqa: E402
+from lidarwater.plots import write_all                                # noqa: E402
 
 LABEL_NAMES = {0: "land", 1: "water", 2: "uncertain", 3: "water_under_canopy", 4: "canopy"}
 
@@ -56,7 +57,8 @@ def write_outputs(state, workspace: Workspace, profile) -> Path:
     out = workspace.pointclouds_dir / "labeled_pointcloud_final.csv"
     columns = {"x": state.cloud.x, "y": state.cloud.y, "z": state.cloud.z,
                "reflectance_dB": state.cloud.reflectance_db}
-    for name in ("wcn_proba", "canopy_proba", "reconstructed_label", "final_label"):
+    for name in ("wcn_proba", "wcn_xgb_proba", "canopy_proba",
+                 "reconstructed_label", "final_label"):
         value = getattr(state, name, None)
         if value is not None:
             columns[name] = value
@@ -99,6 +101,8 @@ def main() -> int:
 
     report_labels(state)
     print(f"\nwrote {write_outputs(state, workspace, profile)}")
+    for figure in write_all(state, workspace.plot_dir, profile.water_level_z):
+        print(f"      {figure}")
     return 0
 
 

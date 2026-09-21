@@ -26,6 +26,35 @@ _ZERO_FALLBACK_COLS = [
 ]
 
 _DEPTH_PROXY_M_PER_SI = 0.05625   # c_water / 2, in SI sample units -> metres
+_MIN_GATED_SAMPLES = 3            # below this the gate is too aggressive; keep the raw record
+
+
+def _noise_floor(amps: np.ndarray, config: FeatureConfig) -> float:
+    """The record's noise-floor amplitude.
+
+    np.partition, not np.percentile: only this one order statistic is
+    needed, and it is taken once per point (~0.5 s vs ~5 s across a
+    230k-point cloud).
+    """
+    rank = int(0.01 * config.grid_noise_percentile * (len(amps) - 1))
+    return float(np.partition(amps, rank)[rank])
+
+
+def _gate_noise(times: np.ndarray, amps: np.ndarray,
+                config: FeatureConfig) -> tuple[np.ndarray, np.ndarray]:
+    """Drop samples sitting at the digitiser noise floor.
+
+    An SVB export stores only samples around each echo; a full-record
+    digitisation stores the entire range gate, so its gap, cluster and
+    occupancy features describe the recording format rather than the
+    returns. Gating recovers the sparse form those features assume.
+    """
+    floor = _noise_floor(amps, config)
+    spread = max(float(np.median(amps)) - floor, 1e-6)
+    keep = amps > floor + config.noise_gate_k * spread
+    if keep.sum() < _MIN_GATED_SAMPLES:
+        return times, amps
+    return times[keep], amps[keep]
 
 
 def _extract_waveform_features(times: np.ndarray, amps: np.ndarray, config: FeatureConfig) -> dict:
@@ -91,20 +120,28 @@ def _first_return_time(times: np.ndarray, amps: np.ndarray, config: FeatureConfi
     Full-record digitisations store the whole range gate, so times[0] is
     pre-trigger noise hundreds of samples ahead of any echo.
     """
-    # np.partition, not np.percentile: only the one order statistic is needed,
-    # and this runs once per point (~5 s vs ~0.5 s across a 230k-point cloud).
-    rank = int(0.01 * config.grid_noise_percentile * (len(amps) - 1))
-    floor = float(np.partition(amps, rank)[rank])
+    floor = _noise_floor(amps, config)
     threshold = floor + config.grid_return_frac * (float(np.max(amps)) - floor)
     above = np.flatnonzero(amps > threshold)
     return int(times[above[0]]) if len(above) else int(times[0])
 
 
-def _waveform_to_grid(times: np.ndarray, amps: np.ndarray, config: FeatureConfig) -> np.ndarray:
+def _grid_origin_time(times: np.ndarray, amps: np.ndarray, config: FeatureConfig) -> int:
+    """Time [SI] that maps to grid bin 0.
+
+    Measured on the raw record: the noise gate removes low samples, which
+    would otherwise drag the measured first return later by a few samples
+    and make bin 0 mean something slightly different per point.
+    """
+    if config.grid_origin == GRID_ORIGIN_FIRST_RETURN:
+        return _first_return_time(times, amps, config)
+    return int(times[0])
+
+
+def _waveform_to_grid(times: np.ndarray, amps: np.ndarray, config: FeatureConfig,
+                      t_origin: int) -> np.ndarray:
     """Project a non-contiguous waveform onto a fixed-length dense grid,
-    origin-relative (the origin sample maps to bin 0)."""
-    t_origin = (_first_return_time(times, amps, config)
-                if config.grid_origin == GRID_ORIGIN_FIRST_RETURN else int(times[0]))
+    origin-relative (``t_origin`` maps to bin 0)."""
     grid = np.zeros(config.grid_size, dtype=np.float32)
     idx = times.astype(np.int64) - t_origin
     valid = (idx >= 0) & (idx < config.grid_size)
@@ -126,8 +163,11 @@ def _extract_all_waveforms(cloud: PointCloud, config: FeatureConfig) -> tuple[pd
         if len(times) == 0 or len(times) != len(amps):
             records.append({k: 0 for k in _ZERO_FALLBACK_COLS})
             continue
+        t_origin = _grid_origin_time(times, amps, config)
+        if config.noise_gate:
+            times, amps = _gate_noise(times, amps, config)
         records.append(_extract_waveform_features(times, amps, config))
-        grids[i] = _waveform_to_grid(times, amps, config)
+        grids[i] = _waveform_to_grid(times, amps, config, t_origin)
     return pd.DataFrame.from_records(records), grids
 
 

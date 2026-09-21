@@ -25,10 +25,19 @@ import dataclasses
 import numpy as np
 
 from ._stages.canopy import _cell_aggregate, _fill_holes
-from ._stages.features import ENERGY_CONCENTRATION_BINS, _waveform_to_grid
+from ._stages.features import (
+    ENERGY_CONCENTRATION_BINS,
+    _grid_origin_time,
+    _waveform_to_grid,
+)
 from .config import (
+    BOOTSTRAP_SURFACE,
     GRID_ORIGIN_FIRST_RETURN,
     GRID_ORIGIN_FIRST_SAMPLE,
+    REFLECTANCE_FEATURE,
+    STANDARDIZE_ARTIFACT,
+    STANDARDIZE_SITE,
+    WCN_SCALAR_FEATURES,
     FeatureConfig,
     PipelineConfig,
 )
@@ -54,6 +63,10 @@ Z_HISTOGRAM_BIN_M = 0.10
 GROUND_CELL_M = 1.0
 GROUND_PERCENTILE = 0.05   # fraction, matching CanopyConfig.dtm_percentile
 CANOPY_PROBE_M = 3.0
+# How far above a *plane-interpolated* surface estimate a point may still be
+# judged on its waveform. The estimate is unreliable there, so the elevation
+# test must not overrule the model; 1 m comfortably covers the observed dip.
+_FALLBACK_TOL_M = 1.0
 # Below this share of waveform energy inside the first grid_size bins, the
 # record is a full digitisation and the grid must be anchored on the return.
 FIRST_SAMPLE_ENERGY_MIN = 0.50
@@ -84,6 +97,12 @@ _REFLECTANCE_FIELDS: tuple[tuple[str, str], ...] = (
 _OTHER_DERIVED_FIELDS: tuple[tuple[str, str], ...] = (
     ("surface.surface_grid", "energy_concentration_min"),
     ("features", "grid_origin"),
+    ("features", "noise_gate"),
+    ("wcn", "standardize"),
+    ("surface.bed", "enabled"),
+    ("wcn", "scalar_features"),
+    ("bootstrap", "method"),
+    ("surface", "fallback_tol_m"),
 )
 
 # Everything derive_site_config() touches — the coverage test asserts no
@@ -102,6 +121,7 @@ class SiteProfile:
     grid_origin: str
     first_bin_energy_fraction: float
     energy_concentration_gate: float
+    full_record: bool
     canopy_fraction_above_probe: float
     canopy_expected: bool
 
@@ -115,6 +135,8 @@ class SiteProfile:
             f"(energy in first bins {self.first_bin_energy_fraction:.1%})",
             f"compact-waveform gate   {self.energy_concentration_gate:.3f} "
             f"(Pielach {PIELACH_ENERGY_GATE})",
+            f"full-record digitisation {self.full_record} "
+            f"(noise gate + per-site WCN standardisation)",
             f"canopy expected         {self.canopy_expected} "
             f"({self.canopy_fraction_above_probe:.2%} of points >{CANOPY_PROBE_M:g} m above ground)",
         ])
@@ -180,7 +202,8 @@ def energy_concentration_gate(cloud: PointCloud, features: FeatureConfig,
     Needs ``features.grid_origin`` already decided — the grid anchoring
     changes which bins the energy lands in.
     """
-    grids = (_waveform_to_grid(times, amps, features)
+    grids = (_waveform_to_grid(times, amps, features,
+                               _grid_origin_time(times, amps, features))
              for times, amps in _iter_probe_waveforms(cloud, n_probe))
     values = [g[:ENERGY_CONCENTRATION_BINS].sum() / g.sum() for g in grids if g.sum() > 0]
     if not values:
@@ -196,8 +219,8 @@ def profile_cloud(cloud: PointCloud, base: PipelineConfig) -> SiteProfile:
         (height_above_ground(cloud.xyz) > CANOPY_PROBE_M).mean())
     new_gate = float(np.percentile(cloud.reflectance_db,
                                    PIELACH_REFLECTANCE_GATE_PERCENTILE))
-    grid_origin = (GRID_ORIGIN_FIRST_SAMPLE if energy_fraction >= FIRST_SAMPLE_ENERGY_MIN
-                   else GRID_ORIGIN_FIRST_RETURN)
+    full_record = energy_fraction < FIRST_SAMPLE_ENERGY_MIN
+    grid_origin = GRID_ORIGIN_FIRST_RETURN if full_record else GRID_ORIGIN_FIRST_SAMPLE
     energy_gate = energy_concentration_gate(
         cloud, dataclasses.replace(base.features, grid_origin=grid_origin))
     return SiteProfile(
@@ -208,6 +231,7 @@ def profile_cloud(cloud: PointCloud, base: PipelineConfig) -> SiteProfile:
         grid_origin=grid_origin,
         first_bin_energy_fraction=energy_fraction,
         energy_concentration_gate=energy_gate,
+        full_record=full_record,
         canopy_fraction_above_probe=above_probe,
         canopy_expected=above_probe >= base.canopy.min_canopy_frac,
     )
@@ -228,7 +252,27 @@ def derive_site_config(cloud: PointCloud, base: PipelineConfig | None = None,
     config = _shift_fields(config, _REFLECTANCE_FIELDS, profile.reflectance_shift_db)
     config = _replace_nested(config, "surface.surface_grid",
                              energy_concentration_min=profile.energy_concentration_gate)
-    return _replace_nested(config, "features", grid_origin=profile.grid_origin), profile
+    # A full-record digitisation needs its noise gated away, and its scalar
+    # statistics differ enough from the checkpoint's that the shipped
+    # z-scoring saturates the network.
+    config = _replace_nested(config, "surface", fallback_tol_m=_FALLBACK_TOL_M)
+    config = _replace_nested(
+        config, "surface.bed",
+        enabled=profile.canopy_fraction_above_probe >= base.surface.bed.min_canopy_frac)
+    # Reflectance is excluded from the shipped cross-site feature set because
+    # its dB scale is survey-specific. A model fitted for one site is only used
+    # there, so the objection does not apply and the signal is worth having.
+    # The z-band bootstrap encodes one survey's elevations; on any other site
+    # it teaches the model an elevation rule that happens to be wrong.
+    config = _replace_nested(config, "bootstrap", method=BOOTSTRAP_SURFACE)
+    scalar_features = (*WCN_SCALAR_FEATURES, REFLECTANCE_FEATURE)
+    config = _replace_nested(
+        config, "wcn",
+        standardize=(STANDARDIZE_SITE if profile.full_record else STANDARDIZE_ARTIFACT),
+        scalar_features=scalar_features,
+        arch=dataclasses.replace(base.wcn.arch, n_scalar=len(scalar_features)))
+    return _replace_nested(config, "features", grid_origin=profile.grid_origin,
+                           noise_gate=profile.full_record), profile
 
 
 def _shift_fields(config: PipelineConfig, fields: tuple[tuple[str, str], ...],

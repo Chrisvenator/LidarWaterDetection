@@ -14,12 +14,15 @@ RIVER_HALF_WIDTH = 5.0
 CANOPY_DIST_FROM_CENTER = 12.0
 
 
-@pytest.fixture
-def synthetic_river():
+def build_synthetic_river(n: int = 2000):
     """Returns (cloud, is_water, is_canopy) for a straight synthetic channel
-    along y, with land on either bank and canopy near the plot edges."""
+    along y, with land on either bank and canopy near the plot edges.
+
+    ``n`` matters for the unsupervised bootstrap: below a few thousand
+    points the v6 model never reaches the confidence the tier-1 footprint
+    anchors require, so the geometry pass yields no water labels at all.
+    """
     rng = np.random.default_rng(0)
-    n = 2000
     x = rng.uniform(0, 40, n)
     y = rng.uniform(0, 100, n)
     dist_from_center = np.abs(x - RIVER_CENTER_X)
@@ -50,3 +53,16 @@ def synthetic_river():
     wf_df = pd.DataFrame({"Time [SI]": times_list, "Amplitude [ADC]": amps_list})
     cloud = PointCloud.from_dataframe(points_df, wf_df)
     return cloud, is_water, is_canopy
+
+
+@pytest.fixture
+def synthetic_river():
+    return build_synthetic_river()
+
+
+@pytest.fixture(scope="module")
+def synthetic_river_module():
+    """Module-scoped and large enough for the unsupervised bootstrap to
+    produce water labels — for tests that fit a model once then assert
+    against it several times."""
+    return build_synthetic_river(n=8000)
