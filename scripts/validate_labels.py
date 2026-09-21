@@ -5,8 +5,13 @@
         --land  data/Inn_DeepLearning_labels/land.txt \
         --land  data/Inn_DeepLearning_labels/proabably-land.txt
 
-Reference files are headerless ``x,y,z`` — one point per line, as exported
-from CloudCompare. Each is matched to its nearest classified point.
+Reference files hold ``x y z`` (or ``x,y,z``) as the first three columns,
+one point per line, as exported from CloudCompare. A leading ``//`` header
+and any extra columns are ignored. Each point is matched to its nearest
+classified point.
+
+A "land" reference may legitimately contain canopy: the test is water vs
+not-water, so any non-water class counts as correct for a land reference.
 """
 
 from __future__ import annotations
@@ -35,10 +40,23 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
+def _read_xyz(path: Path) -> np.ndarray:
+    """First three numeric columns, whatever the delimiter and header."""
+    rows = []
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith(("//", "#")):
+            continue
+        parts = line.replace(",", " ").split()
+        if len(parts) >= 3:
+            rows.append([float(v) for v in parts[:3]])
+    return np.asarray(rows, dtype=float).reshape(-1, 3)
+
+
 def load_reference(paths: list[Path]) -> np.ndarray:
     if not paths:
         return np.empty((0, 3))
-    return np.vstack([np.loadtxt(p, delimiter=",", ndmin=2) for p in paths])
+    return np.vstack([_read_xyz(p) for p in paths])
 
 
 def match(tree: cKDTree, points: np.ndarray) -> tuple[np.ndarray, int]:

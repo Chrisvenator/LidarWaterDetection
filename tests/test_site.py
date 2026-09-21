@@ -477,3 +477,60 @@ def test_bootstrap_config_rejects_an_unknown_method():
 
     with pytest.raises(ValueError, match="bootstrap method must be one of"):
         BootstrapConfig(method="magic")
+
+
+# ── uncertain-class resolution ───────────────────────────────────────────────
+
+def _geometry_state(cloud, is_water, config):
+    from lidarwater._stages import features, surface
+
+    state = features.run(cloud, config.features)
+    state.wcn_proba = np.where(is_water, 0.95, 0.05).astype(np.float32)
+    state.wcn_xgb_proba = np.where(is_water, 0.90, 0.10).astype(np.float32)
+    surface.run(state, config.surface, geometry_only=True)
+    return state
+
+
+def test_uncertain_is_emitted_by_default(synthetic_river):
+    cloud, is_water, _ = synthetic_river
+    state = _geometry_state(cloud, is_water, PipelineConfig())
+    assert (state.reconstructed_label == 2).any(), "expected some abstention to resolve"
+
+
+def test_resolving_uncertain_leaves_no_abstentions(synthetic_river):
+    cloud, is_water, _ = synthetic_river
+    config = PipelineConfig()
+    config = dataclasses.replace(config, surface=dataclasses.replace(
+        config.surface, resolve_uncertain=True))
+
+    state = _geometry_state(cloud, is_water, config)
+    assert not (state.reconstructed_label == 2).any()
+    assert set(np.unique(state.reconstructed_label)) <= {0, 1, 3}
+
+
+def test_resolution_follows_the_model_probability(synthetic_river):
+    """Each resolved point must land on the side its own probability says."""
+    from lidarwater._stages import surface
+
+    cloud, is_water, _ = synthetic_river
+    base = PipelineConfig()
+    plain = _geometry_state(cloud, is_water, base)
+    resolved = _geometry_state(cloud, is_water, dataclasses.replace(
+        base, surface=dataclasses.replace(base.surface, resolve_uncertain=True)))
+
+    was_uncertain = plain.reconstructed_label == 2
+    expected = np.where(plain.wcn_proba[was_uncertain] >= 0.5,
+                        surface.LABEL_WATER, surface.LABEL_LAND)
+    assert np.array_equal(resolved.reconstructed_label[was_uncertain], expected)
+
+
+def test_resolve_uncertain_requires_probabilities():
+    from lidarwater._stages.surface import classify_points
+
+    config = PipelineConfig()
+    config = dataclasses.replace(config, surface=dataclasses.replace(
+        config.surface, resolve_uncertain=True))
+    feat = pd.DataFrame({"z": np.array([1.0, 2.0])})
+    with pytest.raises(ValueError, match="needs water_proba"):
+        classify_points(feat, np.array([False, False]), np.zeros(2),
+                        np.array([2, 2], dtype=np.int8), config.surface)
