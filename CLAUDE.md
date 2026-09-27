@@ -433,3 +433,17 @@ df['label'] = (df['z'] < thr).astype(int)
 **Paths**: `pathlib.Path` only, never `os.path`.
 
 **No over-engineering**: No abstract base classes, factory patterns, or config objects unless reuse is proven. Three similar lines beat a premature abstraction.
+
+## Agent skills
+
+### Issue tracker
+
+Issues tracked as GitHub Issues on `Chrisvenator/LidarWaterDetection` via `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default five-role vocabulary (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: root `CONTEXT.md` + `docs/adr/`. See `docs/agents/domain.md`.
