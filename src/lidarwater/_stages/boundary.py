@@ -160,6 +160,8 @@ def run(state: PipelineState, config: BoundaryConfig) -> PipelineState:
     contours = extract_contours(grid_smooth, x_min, y_min, config)
 
     state.boundary_contours = contours
+    state.boundary_field = grid_smooth
+    state.boundary_field_origin = (x_min, y_min)
     state.metrics["boundary"] = {
         "n_evidence_points": int(use.sum()),
         "levels": {name: len(segs) for name, segs in

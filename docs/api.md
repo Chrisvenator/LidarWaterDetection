@@ -324,6 +324,13 @@ from lidarwater import derive_site_config, SiteProfile, Workspace
 | `SiteProfile` | frozen dataclass | What was measured and what it implied — see below |
 | `Workspace` | `Workspace.for_dataset(name, runs_dir="runs") -> Workspace` | Per-dataset output tree |
 
+Diagnostic figures are written per run by `lidarwater.plots.write_all(state,
+out_dir, water_level=None, boundary_config=None)`: `classes_topdown.png`,
+`cross_section.png`, `elevation_profile.png`, `water_probability.png`, plus
+`boundary_heatmap.png` and `boundary_overlay.png` when the boundary stage has
+run and its config is passed. Figures whose inputs a partial stage set did not
+produce are skipped rather than raising.
+
 `SiteProfile` fields: `n_points`, `water_level_z`, `z_shift_m`,
 `reflectance_shift_db`, `grid_origin`, `first_bin_energy_fraction`,
 `energy_concentration_gate`, `full_record`, `canopy_fraction_above_probe`,
