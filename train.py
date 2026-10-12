@@ -58,8 +58,8 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parent
 
 # ── Raw inputs ────────────────────────────────────────────────────────────────
-PC_RAW  = ROOT / "data"           / "point_cloud_df.txt"
-WF_RAW  = ROOT / "data"           / "waveform_df.txt"
+PC_RAW  = ROOT / "data" / "Pielach" / "point_cloud_df.txt"
+WF_RAW  = ROOT / "data" / "Pielach" / "waveform_df.txt"
 
 # ── Stage outputs (used as skip sentinels) ────────────────────────────────────
 FEAT_RAW   = ROOT / "data_processed" / "features.csv"

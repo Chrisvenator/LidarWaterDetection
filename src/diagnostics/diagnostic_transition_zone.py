@@ -27,7 +27,7 @@ import pandas as pd
 from scipy.spatial import cKDTree
 
 ROOT = Path(__file__).resolve().parent.parent.parent
-DATA_DIR = ROOT / "data"
+DATA_DIR = ROOT / "data" / "Pielach"
 OUT_DIR = ROOT / "models" / "diagnostics"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 

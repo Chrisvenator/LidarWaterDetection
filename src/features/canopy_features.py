@@ -20,8 +20,8 @@ from scipy import ndimage
 from scipy.spatial import cKDTree
 
 ROOT = Path(__file__).resolve().parent.parent.parent
-POINT_CLOUD_PATH = ROOT / "data" / "point_cloud_df.txt"
-WAVEFORM_PATH = ROOT / "data" / "waveform_df.txt"
+POINT_CLOUD_PATH = ROOT / "data" / "Pielach" / "point_cloud_df.txt"
+WAVEFORM_PATH = ROOT / "data" / "Pielach" / "waveform_df.txt"
 FEATURES_IN_PATH = ROOT / "data_processed" / "features_current.csv"
 V10_PATH = ROOT / "pointclouds" / "labeled_pointcloud_v10.csv"
 OUT_PATH = ROOT / "data_processed" / "canopy_features.csv"

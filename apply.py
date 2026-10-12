@@ -30,8 +30,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 
 # ── Sentinel files ────────────────────────────────────────────────────────────
-PC_RAW     = ROOT / "data"           / "point_cloud_df.txt"
-WF_RAW     = ROOT / "data"           / "waveform_df.txt"
+PC_RAW     = ROOT / "data" / "Pielach" / "point_cloud_df.txt"
+WF_RAW     = ROOT / "data" / "Pielach" / "waveform_df.txt"
 FEAT_RAW   = ROOT / "data_processed" / "features.csv"
 GRIDS      = ROOT / "data_processed" / "waveform_grids.npy"
 FEAT_CUR   = ROOT / "data_processed" / "features_current.csv"

@@ -29,9 +29,10 @@ Classify each LiDAR point: **water** (river surface, water column, riverbed) or 
 
 ```
 /home/chrisvenator/PycharmProjects/LidarWaterDetection/
-├── data/                          # RAW DATA (gitignored)
-│   ├── point_cloud_df.txt         # 234,024 rows, ~19 MB
-│   └── waveform_df.txt            # 234,024 rows, ~92 MB
+├── data/                          # RAW DATA (gitignored), one folder per survey
+│   └── Pielach/
+│       ├── point_cloud_df.txt     # 234,024 rows, ~19 MB
+│       └── waveform_df.txt        # 234,024 rows, ~92 MB
 ├── data_processed/                # Computed, not raw
 │   ├── features_v2.csv            # 234,024 × 42 feature matrix — USE THIS
 │   ├── labels_v3.csv              # Early z-threshold labels (deprecated)
@@ -51,7 +52,7 @@ Classify each LiDAR point: **water** (river surface, water column, riverbed) or 
 CSV. Columns: `Unnamed: 0` (index), `x`, `y`, `z`, `_riegl.reflectance`
 
 ```python
-pc = pd.read_csv('data/point_cloud_df.txt')
+pc = pd.read_csv('data/Pielach/point_cloud_df.txt')
 ```
 
 Coordinate system: ETRS89/UTM 33N, EPSG:25833, local-offset residuals:
@@ -74,7 +75,7 @@ def parse_array_string(s):
     nums = re.findall(r'[-+]?\d+', str(s))
     return np.array([int(x) for x in nums], dtype=np.int32)
 
-wf = pd.read_csv('data/waveform_df.txt')
+wf = pd.read_csv('data/Pielach/waveform_df.txt')
 times = parse_array_string(wf['Time [SI]'].iloc[i])
 amps  = parse_array_string(wf['Amplitude [ADC]'].iloc[i])
 ```
