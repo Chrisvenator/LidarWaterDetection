@@ -34,6 +34,9 @@ Two artefacts exist:
 because the strongest ones encode the vendor's waveform export format rather
 than the physics. Per-site fitting with an elevation-free bootstrap is the
 correct architecture.*
+**Re-measured 2026-11-11 (§12): holds only in a weaker form. Transfer fails,
+but the "because export format" clause is not supported and "reflectance rank
+transfers" is withdrawn. Use the §12 wording.**
 Strongest evidence, most surprising, hardest to get from a single dataset, and
 it is a result other groups can act on. Risk: a negative result needs airtight
 measurement, and n=2 surveys limits the claim (see §8).
@@ -69,15 +72,16 @@ Strength column: **hard** = measured against human/independent labels,
 
 | Claim | Number | Source | Strength |
 |---|---|---|---|
-| Waveform-only classification works within a site | AUC 0.989 Pielach / 0.972 Inn (11 scalars); 0.983/0.986 (raw 200-bin grid) | `context/cross_site_transfer.md` §1 | soft; **not re-measured — no script for this experiment is committed** (§11) |
-| …same, unbiased | AUC 0.902 on 65 hand-labelled Inn points (leave-one-out) | ibid. | **downgraded**: 65 points in 54 ten-metre blocks, land sample unrepresentative (§11 Q2); no committed script |
-| Waveform-only transfer is chance | AUC 0.478 Pielach→Inn, 0.647 Inn→Pielach; site-rank encoding does not help (0.492 / 0.685) | ibid. §2 | **downgraded**: Inn side rests on the 65; no committed script |
-| Dropping the four non-transferring features does not rescue transfer | 0.419–0.467 and 0.611–0.689 | ibid. §2 | soft; no committed script |
-| Only reflectance *rank* transfers | AUC 0.958 (86.9% balanced) Pielach→Inn hand labels, reflectance rank alone | ibid. §3 | **downgraded to unsupported**: the 65's land points are 94% brighter than 0 dB, region land only 41%. A reflectance cut at +0.25 dB scores 97.2% on the 65 but 70.5% [64.3, 78.4] on the regions (§11 Q2) |
-| Adding waveform features *degrades* that | 0.958 → 0.745 | ibid. §3 | **downgraded**: same biased 65; no interval; no committed script |
-| Absolute dB is irreconcilable, rank nearly coincides | Pielach water/land −23.60/−13.57 dB; Inn −4.77/+0.01 dB; ranks 0.410/0.907 vs 0.484/0.879 | ibid. §3 | not re-checked; class means depend on which labels define water/land **[VERIFY]** |
-| The four dead features describe the export format | `max_amp_norm_by_energy` −0.65→+0.07, `gap_ratio` −0.62→+0.13, `n_gaps` −0.56→+0.05, `n_clusters` −0.56→+0.05 (water−land shift, site-normalised) | ibid. §4 | soft (pipeline labels define the classes); not re-checked |
-| What survives is consistent but weak | `energy_concentration` 0.33/0.29, `peak_amp_ratio` −0.24/−0.22, `depth_proxy_m` −0.20/−0.20 | ibid. §4 | soft; not re-checked |
+| Waveform-only classification works within a site | 11 scalars: AUC **0.890 [0.806, 0.946]** Pielach (n = 26,645, 28 blocks), **0.993 [0.990, 0.995]** Inn (n = 180,394, 199 blocks). Raw grid: 0.888 [0.800, 0.949] / 0.999 [0.999, 1.000]. 10 m block CV | `src/diagnostics/measure_transfer.py` → `runs/transfer/transfer_results.json`; `context/cross_site_transfer.md` §1 | **hard on Pielach** (independent reference, wide interval); **agreement with hand-drawn regions on Inn** (easy interiors, dev-era). Old 0.989 / 0.972 were pipeline-label scores (reproduced as 0.980 / 0.988) — superseded (§12) |
+| …same, on the 65 picked points | AUC 1.000, balanced 0.972 [0.929, 1.0] | ibid. §1 | **uninformative**: biased set, saturated. Old 0.902 withdrawn |
+| Waveform-only transfer fails | Pielach→Inn: 0.567 [0.551, 0.580] raw, 0.430 [0.413, 0.448] site-rank, grid 0.647 [0.593, 0.690]. Inn→Pielach: 0.702 [0.602, 0.773] raw, 0.725 [0.623, 0.805] site-rank, grid 0.638 [0.590, 0.670]. Gap to within-site (paired): 0.426 [0.413, 0.443] and 0.188 [0.116, 0.266] | ibid. §2 | **hard, re-measured.** Pielach→Inn is chance; Inn→Pielach is weak but above chance, balanced accuracy 0.52–0.57. "Chance in both directions" is too strong |
+| Dropping the four non-transferring features does not rescue transfer | 7 features: 0.454 / 0.442 (Pielach→Inn), 0.711 / 0.627 (Inn→Pielach) | ibid. §2 | **hard, confirmed** |
+| Only reflectance *rank* transfers | Pielach→Inn reflectance rank: **0.601 [0.486, 0.740]** on regions (0.970 on the 65). Inn→Pielach: 0.766 [0.633, 0.860] | ibid. §3 | **WITHDRAWN.** Interval includes 0.5 on the regions; reflectance does not order the classes on Inn's regions at all (own AUC 0.457 [0.303, 0.577]) |
+| Adding waveform features *degrades* that | regions: +7 features −0.032 [−0.131, 0.084] (no change); +11 features costs 0.107 [0.042, 0.187]. On the 65: costs 0.134 / 0.151. Inn→Pielach: +11 *helps* 0.044 [0.009, 0.080] | ibid. §3 | **WITHDRAWN as stated**; an artefact of the 65 except for the 11-feature case in one direction |
+| Absolute dB is irreconcilable, rank nearly coincides | honest labels: Pielach water/land −23.18/−15.35 dB, Inn −6.75/−4.69 dB; ranks 0.404/0.806 vs 0.479/0.532 | ibid. §3 | **first half holds** (raw-dB transfer 0.460 / 0.588); **"rank nearly coincides" WITHDRAWN** — Inn land rank is 0.53, not 0.88 |
+| The four features die or reverse across the two surveys | water−land shift, cloud sd: `max_amp_norm_by_energy` −0.80 [−1.21, −0.33] → +0.05; `gap_ratio` −0.60 [−0.78, −0.43] → +0.17 [0.10, 0.23]; `n_gaps`/`n_clusters` −0.30 [−0.60, −0.11] → +0.07 [0.03, 0.11] | ibid. §4 | **hard, confirmed qualitatively.** Sign depends on class definition: vs pipeline labels Pielach `max_amp_norm_by_energy` is +0.58 |
+| …because they describe the export format, and that is why transfer fails | common echo-window re-export of both surveys: gap/cluster shifts vanish (Inn `n_gaps` mean 0.001; Pielach `gap_ratio` −0.60 → −0.13 [−0.42, 0.13]); scalar transfer unchanged (Pielach→Inn −0.033 [−0.057, −0.004]); raw grid recovers partly only after matching the time axis (+0.080 / +0.159, to 0.727 / 0.797) | ibid. §5 | **NOT SUPPORTED.** The features do reflect what the export keeps, but harmonising the export does not restore transfer. Larger measured difference: echo width 69 vs 3 samples, record ends 7 Pielach-equivalent samples after first return |
+| What survives is consistent but weak | `peak_amp_ratio` −0.32 [−0.42, −0.20] / −0.22 [−0.31, −0.14]; `energy_ratio_late` +0.99 / +0.20 (same sign). `energy_concentration` +0.09 [−0.17, 0.41] / +0.48 and `depth_proxy_m` −0.12 [−0.33, 0.06] / −0.20 are not significant on Pielach | ibid. §4 | **hard, weakened**: one feature agrees cleanly, not three |
 | Elevation leakage | 97.68% of Inn final output reproduced by `z < 380.44 m` | `CLAUDE.md`, failure mode 5 | **downgraded**: the z-band run is not on disk, so 97.68% is unverifiable. Context it needs: the *corrected* output is itself 89.0% (base) / 94.7% (all flags) reproduced by `z < 380.77`, and against the region labels that one rule scores 96.0% [92.6, 98.3] vs the pipeline's 97.1% [96.2, 97.9] — indistinguishable. Only the 65 separate them (77.8% [68.8, 87.1] vs 93.1% [86.0, 98.6]), and that gap is the 15 "probably-land" points on one gravel bar |
 | Elevation-free surface bootstrap fixes it | Otsu over all points −7.10 dB / 61.0% balanced; over surface layers −0.46 dB / 97.2% (100% water, 94.4% land); stable across 2–4 m cells | ibid. | **confirmed on the 65** (97.2%, block CI [93.0, 100], identical at 2/3/4 m). On the regions: 96.2% [94.8, 97.6] at 3 m, and *not* cell-stable (94.2% / 96.2% / 97.4% at 2/3/4 m). All-points Otsu figure not re-measured |
 | Flatness alone is insufficient | cell flatness: 100% water recall, ~40% land; per-point planarity reverses (water 0.61, land 0.73) | ibid. | not re-checked |
@@ -225,15 +229,22 @@ model is worse than a noisy one.
 1. **n = 2 surveys. — OPEN, and now fixed as a constraint.** Only Pielach and
    Inn exist; the course datasets A1–A6 have been deleted and are not
    candidates. This is a **two-survey study**. Every transfer claim must read
-   "between these two exports"; `context/cross_site_transfer.md` §6 already
-   concedes this. A third site remains the highest-value missing asset, and it
+   "between these two exports"; `context/cross_site_transfer.md` §7 already
+   concedes this. The 2026-11-11 re-measurement (§12) sharpens it: export
+   format, instrument settings (echo width 69 vs 3 samples, truncated range
+   gate) and site are confounded, and harmonising the export alone did not
+   restore transfer, so with two surveys the cause of the failure cannot be
+   named. A third site remains the highest-value missing asset, and it
    would have to be newly acquired.
-2. **Circular labels. — OPEN.** Within-site AUCs (0.989 / 0.972) are measured
-   against pipeline-derived labels. In addition, **no script for any
-   cross-site or within-site AUC in `context/cross_site_transfer.md` is
-   committed** (grep for the experiment finds only prose), so none of §1–§4
-   of that file can currently be regenerated. Re-run from a committed script
-   before any of it is cited.
+2. **Circular labels. — RESOLVED for the transfer experiments (§12).**
+   `src/diagnostics/measure_transfer.py` regenerates every number in
+   `context/cross_site_transfer.md` with one command, on the Mandlburger
+   matches (Pielach) and the hand-drawn regions (Inn), with 10 m block
+   intervals; pipeline labels appear only as a marked secondary column.
+   Within-site AUC on Pielach falls from 0.989 to 0.890 [0.806, 0.946].
+   Still open: Pielach's reference is 28 blocks of algorithm output, and
+   Inn's regions are easy interiors drawn from reflectance and geometry, so
+   neither is a blind test set.
 3. **Inn label sets. — RESOLVED as a question, and the answer is bad.** The
    "208k hand labels" are 180,394 unique points inside seven hand-drawn
    regions, cut from the pipeline's own output cloud, with heavy overlap
@@ -290,9 +301,9 @@ model is worse than a noisy one.
       (§8.4). 99.4% [99.1, 99.7] regions / 96.6% [91.4, 100] picked points with
       a fresh fit; 97.1% / 93.1% with the stale September models.
 - [x] Diagnose the margin under-call (§8.6). Diagnosed; fix not attempted.
-- [ ] **New:** commit a script that regenerates every number in
+- [x] **New:** commit a script that regenerates every number in
       `context/cross_site_transfer.md`, and re-run it with block-bootstrap
-      intervals. Blocks thesis A.
+      intervals. Done 2026-11-11 (§12); thesis A survives only in weaker form.
 - [ ] **New:** build an Inn test set that is not the dev set: stratified random
       points (`scripts/sample_for_labeling.py` strata plus a uniform random
       stratum), labelled blind to pipeline output, including margins and dark
@@ -309,7 +320,7 @@ model is worse than a noisy one.
 ## 10. Raw material already written
 
 Pile these into the fragments file rather than rewriting them:
-`context/cross_site_transfer.md` (114 lines, already paper-shaped),
+`context/cross_site_transfer.md` (rewritten 2026-11-11 from `measure_transfer.py`),
 `CLAUDE.md` failure-mode section, `context/canopy_plan.md` (design + iteration
 log), `context/knowledge_base.md` (974 lines of domain notes),
 `validation_results/README.md` and `reports/`, `docs/usage.md` + `docs/api.md`.
@@ -426,6 +437,66 @@ the reference over-calls. Not adjudicable without field truth.
 - *Confirmed:* surface bootstrap 97.2% on the 65 and 96.2% on regions;
   residual base-config error is mostly abstention; margin under-call is real
   and systematic; site-profile measurements (water level, energy gate 0.294).
-- *Not checked:* failure modes 1–3 magnitudes, canopy metrics, per-feature
-  shift tables.
+- *Not checked:* failure modes 1–3 magnitudes, canopy metrics. (Per-feature
+  shift tables and every transfer number: re-measured in §12.)
+
+---
+
+## 12. Transfer re-measurement (2026-11-11)
+
+Script: `src/diagnostics/measure_transfer.py` (one command, seed 0, XGBoost
+with fixed hyperparameters; two consecutive runs identical). Output:
+`runs/transfer/transfer_results.json`. Labels: Mandlburger matches on Pielach
+(26,645 points, 28 blocks; join exact, max distance < 1e-9 m), hand-drawn
+regions on Inn (180,394 points, 199 blocks). Intervals: 95% bootstrap over
+10 m blocks, 2,000 draws; differences are paired. Full tables:
+`context/cross_site_transfer.md`. Branch `transfer-remeasure`.
+
+**Q1 — within-site, waveform only.** Pielach 0.890 [0.806, 0.946] (scalars),
+0.888 (grid); Inn 0.993 [0.990, 0.995], 0.999. Works on both, but Pielach is
+0.89 on the independent reference, not 0.989. Random-point folds inflate
+Pielach to 0.944; 10 m and 20 m blocks agree (0.890 / 0.893).
+
+**Q2 — waveform transfer.** Pielach→Inn: 0.567 raw, 0.430 site-rank, 0.647
+grid — chance. Inn→Pielach: 0.702 [0.602, 0.773] raw, 0.725 site-rank, 0.638
+grid — above chance, 0.17–0.26 below within-site (paired intervals exclude 0),
+balanced accuracy 0.52–0.57. Site-rank encoding and dropping the four export
+features help in neither direction.
+
+**Q3 — reflectance rank.** Pielach→Inn 0.601 [0.486, 0.740] on the regions
+against 0.970 on the 65. Not a transferable signal. Waveform features do not
+hurt it on the regions when the 7 are added (−0.032 [−0.131, 0.084]); all 11
+cost 0.107 [0.042, 0.187]; in the other direction they help.
+
+**Q4 — format or physics.** Both surveys re-exported through one echo-window
+function, then time axis matched (Inn echo 69 samples wide, Pielach 3), then
+range gate matched. Scalar transfer never recovers (Pielach→Inn 0.567 → 0.534
+→ 0.559 → 0.477). The gap/cluster shifts do not realign, they vanish. The raw
+grid recovers partly and only when the time axis is matched (0.647 → 0.727,
+0.638 → 0.797), which is a pulse/sampling difference, not an export one.
+**The format explanation is not supported.**
+
+**Q5 — shift table.** The four features die or reverse on honest labels too
+(−0.80/−0.60/−0.30/−0.30 → +0.05/+0.17/+0.07/+0.07). Only `peak_amp_ratio`
+agrees cleanly across sites.
+
+**Verdict on thesis A: holds in a weaker form.** Strongest honest wording:
+
+> Between these two surveys, a waveform-only water classifier fitted on one
+> does not work on the other. Pielach→Inn is at chance (AUC 0.43–0.65 against
+> 0.99 within Inn); Inn→Pielach keeps a weak ranking signal (0.63–0.73
+> against 0.89 within Pielach) with no usable decision threshold. Neither
+> site-rank normalisation, nor removing the features that differ most, nor
+> re-exporting both surveys in a common echo-window format restores it.
+> Reflectance rank does not transfer either. Per-site fitting is therefore
+> required for these data. The cause is not identified: the recordings differ
+> in export, in echo width and range gate, and in the rivers themselves, and
+> two surveys cannot separate these.
+
+What must go: "because the strongest features encode the export format",
+"reflectance rank is the one signal that transfers", "adding waveform
+features degrades it", "chance in both directions". What is left is a
+two-survey negative result without a mechanism, which is thin for a lead
+thesis; B or C would have to carry more of the paper, and both were also
+downgraded in §11. That choice is the author's.
 

@@ -284,15 +284,22 @@ our 1,203 uncertain points; counting abstention as a miss gives 0.911
 tune that guard on the Mandlburger matches — it is the only independent
 reference.
 
-**Do not attempt a cross-site model.** Measured both directions: waveform-only
-transfer is chance (AUC 0.42-0.69) while within-site is 0.97-0.99, because
-Pielach's strongest features (`gap_ratio`, `n_gaps`, `n_clusters`,
-`max_amp_norm_by_energy`) describe its SVB export format and die or reverse on
-Inn's full-record export. Reflectance *percentile rank* looked like it
-transfers (Pielach-trained, AUC 0.958 on the 65 hand-picked Inn points; 0.745
-with waveform features added), but those 65 are biased toward bright land, so
-treat both figures as downgraded until re-measured on the regions. None of the
-numbers in `context/cross_site_transfer.md` has a committed script yet.
+**Do not attempt a cross-site model.** Re-measured 2026-11-11 on honest labels
+(`python src/diagnostics/measure_transfer.py` regenerates every number in
+`context/cross_site_transfer.md`; 10 m block intervals). Waveform-only AUC
+within a site: Pielach 0.890 [0.806, 0.946] on the Mandlburger matches (the
+old 0.989 was against pipeline labels), Inn 0.993 on the regions. Transfer:
+Pielach -> Inn 0.43-0.65 (chance); Inn -> Pielach 0.63-0.73 (weak, balanced
+accuracy 0.52-0.57). Site-rank encoding and dropping `gap_ratio`, `n_gaps`,
+`n_clusters`, `max_amp_norm_by_energy` do not help. Those four do die or
+reverse on Inn, but **"export format is the cause" is not supported**:
+re-exporting both surveys through one echo-window function makes the
+gap/cluster shifts vanish and leaves transfer where it was. The bigger
+difference is the recording itself (Inn's echo is 69 samples wide at half
+maximum, Pielach's 3; an Inn record ends 7 Pielach-equivalent samples after
+its first return). **Reflectance rank does not transfer**: Pielach -> Inn
+0.601 [0.486, 0.740] on the regions; the old 0.958 and the "0.958 -> 0.745"
+drop were artefacts of the 65 biased points — withdrawn.
 
 Measured site profiles: Pielach — water 260.29 m, reflectance p5/50/95
 -28.6/-22.3/-12.3 dB, energy gate 0.845, 46.1% of points >3 m above ground.
