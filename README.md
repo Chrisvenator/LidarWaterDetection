@@ -128,23 +128,22 @@ waveforms and lands at 0.845 against the 0.85 default.
 ### One model per site — cross-site models do not work
 
 **A model fitted on one survey does not transfer to another, and this is
-measured, not assumed.** Waveform-only classification is excellent *within* a
-site (AUC 0.989 Pielach, 0.972 Inn) and no better than chance *across* sites
-(0.42-0.69 in both directions, with or without site-rank normalisation, with
-or without the features that differ most between the two exports).
+measured, not assumed.** Waveform-only classification works *within* a site
+(AUC 0.890 [0.806, 0.946] on Pielach's independent reference, 0.993 on Inn's
+hand-drawn regions) and fails *across* sites: Pielach -> Inn is at chance
+(0.43-0.65), Inn -> Pielach is weak (0.63-0.73) with no usable threshold.
+Site-rank normalisation does not help, and neither does dropping the features
+that differ most between the two exports.
 
-The cause is that waveform shape describes the scanner's processing chain as
-much as the water. Pielach's four most discriminative features are the
-gap/cluster family, which exists because its SVB export stores only samples
-around each echo; Inn's full-range-gate export has no such structure, so
-those features go flat or reverse sign.
+The cause is not pinned down. The gap/cluster features that separate water on
+Pielach go flat or reverse on Inn, but re-exporting both surveys in a common
+echo-window format does not restore transfer. The recordings also differ in
+echo width (69 samples on Inn, 3 on Pielach) and range gate, and two surveys
+cannot separate recording from site.
 
-The single signal that does transfer is **reflectance as a percentile rank
-within its own cloud** (Pielach-trained, Inn-tested: AUC 0.958). Adding
-waveform features to it makes it worse, not better. A "universal" model would
-therefore be a reflectance-rank threshold with a network attached that
-actively harms it — which is not worth building, and is not what this library
-does.
+Reflectance as a percentile rank within its own cloud does **not** transfer
+either (Pielach-trained, Inn-tested: AUC 0.601 [0.486, 0.740]); an earlier
+0.958 came from 65 hand-picked points biased toward bright land.
 
 Use `fit()` per survey. Full measurements and method:
 **[context/cross_site_transfer.md](context/cross_site_transfer.md)**.
