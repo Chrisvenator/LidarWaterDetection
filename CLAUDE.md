@@ -195,11 +195,13 @@ Outputs go to `runs/<dataset>/` (`Workspace`), never into the repo-level
 - **Reflectance excluded from the WCN.** WCN v9's 11 scalar features are all
   dimensionless by design — `reflectance_dB` is left out because its dB scale
   is a property of the scanner and survey, so it does not transfer between
-  sites. On Inn that is the dominant water/land signal: measured against
-  hand-labelled points, a single reflectance threshold at +0.25 dB gets 97.2%
-  balanced accuracy (29/29 water, 34/36 land), and on geometric proxies
-  reflectance alone scores AUC 0.973 against 0.924 for all 11 waveform
-  features (0.983 combined). A model fitted for one site is only ever used
+  sites. On Inn it is a strong water/land signal, but not enough on its own: a
+  single reflectance threshold at +0.25 dB gets 97.2% on the 65 hand-picked
+  points but only 70.5% [64.3, 78.4] on the hand-drawn regions (land recall
+  41%), because the 65 contain almost no dark vegetated land (see "Inn
+  evaluation labels" below). On geometric proxies reflectance alone scores
+  AUC 0.973 against 0.924 for all 11 waveform features (0.983 combined), but
+  those are proxies, not labels. A model fitted for one site is only ever used
   there, so `derive_site_config` appends `reflectance_dB` to
   `WcnConfig.scalar_features` (n_scalar 11 -> 12). `wcn.predict` reads the
   feature list from the checkpoint's own stats file, so the shipped 11-feature
@@ -208,8 +210,12 @@ Outputs go to `runs/<dataset>/` (`Workspace`), never into the repo-level
   Every label in the pipeline descends from `create_labels(z, zones)`, which
   takes elevation and nothing else. The WCN never sees z as a *feature*, but
   z is its entire *teaching signal*, so it learns to reproduce an elevation
-  rule from waveforms — and does, at F1 0.992. Measured on Inn: 97.68% of the
-  final output is reproduced by the single rule `z < 380.44 m`.
+  rule from waveforms — and does, at F1 0.992. On Inn, 97.68% of the
+  z-band-bootstrapped output was reproduced by the single rule `z < 380.44 m`
+  (that run is no longer on disk, so treat the figure as unreproduced). Note
+  that a z rule (`z < 380.77`) also scores 96.0% on the hand-drawn regions:
+  they barely contain the land-below-water-level case, so they cannot show the
+  pipeline beating elevation.
   Where elevation genuinely separates (Pielach) that is fine. Inn's bank
   rises then falls below water level, so it is wrong by construction, and the
   model is confidently wrong rather than randomly wrong.
@@ -219,8 +225,11 @@ Outputs go to `runs/<dataset>/` (`Workspace`), never into the repo-level
   median reflectance of the *surface layer only*. Isolating the surface is
   what makes the reflectance histogram bimodal — over all points the deepest
   Otsu valley falls inside the water mode (-7.10 dB, 61.0% balanced accuracy
-  against hand-labelled points); over surface layers it lands at -0.46 dB and
-  97.2% (100% water, 94.4% land), within 0.7 dB of the hand-labelled optimum.
+  on the 65 hand-picked points); over surface layers it lands at -0.46 dB and
+  97.2% (100% water, 94.4% land), within 0.7 dB of the 65-point optimum. It
+  also holds on the hand-drawn regions (96.2% [94.8, 97.6]) where a bare
+  reflectance cut collapses to 70.5%, so isolating the surface layer is doing
+  real work.
   Stable across 2-4 m cells. Selected by `derive_site_config`; the z-bands
   remain the default so Pielach is untouched.
   Note flatness alone is *not* enough: a gravel bar is a flat coherent sheet
@@ -235,31 +244,55 @@ Outputs go to `runs/<dataset>/` (`Workspace`), never into the repo-level
   there is no water hidden under them, and on Inn it was inventing 17.9% of the
   cloud as a class the site does not contain.
 
+**Inn evaluation labels — read before quoting any Inn number.** Audited
+2026-11-11 (`context/paper_context.md` §11, `src/diagnostics/audit_inn_labels.py`):
+- *Hand-drawn regions* (`data/Inn_DeepLearning_labels/*.asc`): seven
+  overlapping regions drawn in CloudCompare, **180,394 unique points** (136,502
+  water, 43,892 land; 78.2% of the cloud). Earlier "192k" / "208k" counts were
+  sums over overlapping files — withdrawn. These regions were the development
+  set for all three optional flags below, so numbers on them are agreement
+  with a development set, not a test result.
+- *65 hand-picked points* (`*.txt`): clicked by eye, 46 of them inside the
+  regions, biased to easy points. Not blind.
+- Score with 10 m block-bootstrap intervals, each point counted once.
+
+Base configuration (all three flags off), current code, fresh fit: **99.4%
+[99.1, 99.7]** on the regions, **96.6% [91.4, 100]** on the 65. All three flags
+on: 99.89% / 100%. The flags are worth ~0.5 points with current models. The
+older 97.4 -> 98.7 -> 99.3 -> 99.9 ladder came from 2026-09-06 models that the
+committed code no longer reproduces — withdrawn, do not quote it. No reach of
+Inn is untouched by flag tuning, so no flags-on figure is a test result.
+
 `SurfaceConfig.resolve_uncertain` (default off) decides class 2 by the model's
-own probability instead of emitting it: 97.4% -> 98.7% balanced accuracy on
-Inn against 192k hand-labelled points, and 93.1% -> 96.6% on the blind 65.
-Almost all residual error is abstention, not misclassification — of 7,502
-missed water points, 5,395 were labelled uncertain and only 2,107 land.
+own probability instead of emitting it. Residual base-configuration error is
+mostly abstention (uncertain), not misclassification.
 
 `CleanupConfig.majority_filter` (default off) flips points contradicted by
-their neighbours; canopy is never moved. With both it and `resolve_uncertain`
-on, Inn reaches 99.3% against 192k hand labels and 98.3% on the blind 65.
+their neighbours; canopy is never moved.
 
 `CleanupConfig.surface_prior` (default off) restores water the per-point model
 rejects over reaches too deep for a bed echo: volume backscatter gives those
 surface returns many peaks and a long record, i.e. the land signature. The
-bootstrap gets them right (99.3%) from cell context the model cannot see, and
-a probability floor of 0.15 keeps real land (~0.000) untouched. With all three
-optional flags, Inn reaches 99.9% against 208k hand labels and 100% on the
-blind 65.
+bootstrap gets them right from cell context the model cannot see, and a
+probability floor of 0.15 keeps real land (~0.000) untouched.
+
+**Pielach reference F1 is 0.911 [0.84, 0.95]**, not 0.931: the 0.931 dropped
+our 1,203 uncertain points; counting abstention as a miss gives 0.911
+(n = 26,645, only 28 ten-metre blocks). The channel-margin under-call is the
+0.5 `deep_proba` guard letting the waveform ensemble veto geometry
+(`src/lidarwater/_stages/surface.py`), not the footprint or z margin. Don't
+tune that guard on the Mandlburger matches — it is the only independent
+reference.
 
 **Do not attempt a cross-site model.** Measured both directions: waveform-only
 transfer is chance (AUC 0.42-0.69) while within-site is 0.97-0.99, because
 Pielach's strongest features (`gap_ratio`, `n_gaps`, `n_clusters`,
 `max_amp_norm_by_energy`) describe its SVB export format and die or reverse on
-Inn's full-record export. Only reflectance *percentile rank* transfers
-(Pielach-trained on Inn hand labels: AUC 0.958), and adding waveform features
-to it drops that to 0.745. Full numbers: `context/cross_site_transfer.md`.
+Inn's full-record export. Reflectance *percentile rank* looked like it
+transfers (Pielach-trained, AUC 0.958 on the 65 hand-picked Inn points; 0.745
+with waveform features added), but those 65 are biased toward bright land, so
+treat both figures as downgraded until re-measured on the regions. None of the
+numbers in `context/cross_site_transfer.md` has a committed script yet.
 
 Measured site profiles: Pielach — water 260.29 m, reflectance p5/50/95
 -28.6/-22.3/-12.3 dB, energy gate 0.845, 46.1% of points >3 m above ground.
