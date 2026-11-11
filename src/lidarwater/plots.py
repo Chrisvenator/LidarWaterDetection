@@ -28,8 +28,19 @@ TEXT_PRIMARY = "#0b0b0b"
 TEXT_SECONDARY = "#52514e"
 CONTEXT = "#e2e1dd"          # recessive "all other points" layer
 SEQUENTIAL = ["#cde2fb", "#9ec5f4", "#6da7ec", "#3987e5", "#256abf", "#184f95", "#0d366b"]
+# P(water) has a meaningful midpoint — 0.5 is the decision boundary — so the
+# field is diverging, not sequential: blue for water, red for land, neutral
+# grey where the model is undecided. Equal step count per arm.
+DIVERGING_WATER = ["#0d366b", "#184f95", "#256abf", "#3987e5", "#9ec5f4"]
+DIVERGING_MID = "#f0efec"
+DIVERGING_LAND = ["#f4b0af", "#ec7a79", "#e34948", "#b62f2e", "#7d1f1e"]
+
+# Contour levels are distinguished by line style as well as position, so the
+# three are still separable in print and for colour-vision deficiency.
+CONTOUR_STYLES = {"inner": (0, ()), "center": (0, (6, 3)), "outer": (0, (2, 3))}
 
 _POINT_SIZE = 0.4
+_POINT_SIZE_SINGLE = 1.2     # single full-width panel; faceted panels stay smaller
 _CROSS_SECTION_M = 6.0       # thickness of the y-slice drawn in cross-section
 
 
@@ -157,6 +168,78 @@ def plot_water_probability(state: PipelineState, out_dir: Path) -> Path:
                    "Water probability by model head")
 
 
+def _diverging_cmap():
+    from matplotlib.colors import LinearSegmentedColormap
+
+    return LinearSegmentedColormap.from_list(
+        "land_water", [*DIVERGING_LAND[::-1], DIVERGING_MID, *DIVERGING_WATER[::-1]])
+
+
+def _contour_levels(config) -> dict:
+    return {"outer": config.prob_outer, "center": config.prob_center,
+            "inner": config.prob_inner}
+
+
+def _draw_contours(ax, state, config) -> bool:
+    """Overlay the boundary contours; returns whether anything was drawn."""
+    drawn = False
+    for name, level in _contour_levels(config).items():
+        for i, seg in enumerate(state.boundary_contours.get(level, [])):
+            ax.plot(seg[:, 0], seg[:, 1], color=TEXT_PRIMARY, linewidth=1.4,
+                    linestyle=CONTOUR_STYLES[name],
+                    label=f"P = {level:.2f} ({name})" if i == 0 else None)
+            drawn = True
+    return drawn
+
+
+def plot_boundary_heatmap(state: PipelineState, out_dir: Path, config) -> Path:
+    """The probability field the river boundary is cut from, with the cuts."""
+    plt = _pyplot()
+    if state.boundary_field is None:
+        raise ValueError("no boundary field on the state — run the boundary stage first")
+
+    field = state.boundary_field
+    x_min, y_min = state.boundary_field_origin
+    n_y, n_x = field.shape
+    cell = config.cell_size_m
+    extent = [x_min, x_min + n_x * cell, y_min, y_min + n_y * cell]
+
+    fig, ax = plt.subplots(figsize=(15, 8), facecolor=SURFACE)
+    im = ax.imshow(field, origin="lower", extent=extent, cmap=_diverging_cmap(),
+                   vmin=0.0, vmax=1.0, aspect="equal", interpolation="nearest")
+    bar = fig.colorbar(im, ax=ax, fraction=0.03)
+    bar.set_label("P(water)   —   blue water, red land", color=TEXT_SECONDARY, fontsize=8)
+    bar.ax.tick_params(colors=TEXT_SECONDARY, labelsize=7)
+
+    if _draw_contours(ax, state, config):
+        ax.legend(loc="upper right", fontsize=7, framealpha=0.9)
+    _style_axes(ax, "", "x (m)", "y (m)")
+    return _finish(fig, np.array([ax]), 1, out_dir / "boundary_heatmap.png",
+                   f"Water probability field and extracted boundary — {cell:g} m cells, "
+                   f"{config.smooth_sigma_m:g} m smoothing")
+
+
+def plot_boundary_overlay(state: PipelineState, out_dir: Path, config) -> Path:
+    """Classified points under the contours, to see where the cut lands."""
+    plt = _pyplot()
+    fig, ax = plt.subplots(figsize=(15, 8), facecolor=SURFACE)
+    labels = state.final_label
+
+    for cls in sorted(CLASS_NAMES):
+        mask = labels == cls
+        if not mask.any():
+            continue
+        ax.scatter(state.cloud.x[mask], state.cloud.y[mask], s=_POINT_SIZE_SINGLE,
+                   c=CLASS_COLORS[cls], linewidths=0, rasterized=True,
+                   label=f"{CLASS_NAMES[cls]} ({mask.mean():.1%})")
+    _draw_contours(ax, state, config)
+    ax.set_aspect("equal")
+    ax.legend(loc="upper right", fontsize=7, markerscale=12, framealpha=0.9)
+    _style_axes(ax, "", "x (m)", "y (m)")
+    return _finish(fig, np.array([ax]), 1, out_dir / "boundary_overlay.png",
+                   "Classified points with the extracted river boundary")
+
+
 def _densest_bin(z: np.ndarray, bin_m: float = 0.1) -> float:
     edges = np.arange(z.min(), z.max() + bin_m, bin_m)
     counts, _ = np.histogram(z, bins=edges)
@@ -164,7 +247,8 @@ def _densest_bin(z: np.ndarray, bin_m: float = 0.1) -> float:
 
 
 def write_all(state: PipelineState, out_dir: Path,
-              water_level: float | None = None) -> list[Path]:
+              water_level: float | None = None,
+              boundary_config=None) -> list[Path]:
     """Every diagnostic figure the state supports, skipping those whose
     inputs a partial stage set did not produce."""
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -175,4 +259,9 @@ def write_all(state: PipelineState, out_dir: Path,
                     plot_elevation_profile(state, out_dir, water_level)]
     if state.wcn_proba is not None or state.wcn_xgb_proba is not None:
         written.append(plot_water_probability(state, out_dir))
+    if state.boundary_contours is not None and boundary_config is not None:
+        if state.boundary_field is not None:
+            written.append(plot_boundary_heatmap(state, out_dir, boundary_config))
+        if state.final_label is not None:
+            written.append(plot_boundary_overlay(state, out_dir, boundary_config))
     return written

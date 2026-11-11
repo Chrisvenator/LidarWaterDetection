@@ -175,6 +175,8 @@ class PipelineState:
 
     # boundary stage
     boundary_contours: dict[float, list[np.ndarray]] | None = None
+    boundary_field: np.ndarray | None = None                 # (n_y, n_x) smoothed P(water)
+    boundary_field_origin: tuple[float, float] | None = None  # (x_min, y_min) of that grid
 
     # free-form diagnostics / stage metrics, keyed by stage name
     metrics: dict[str, dict] = dataclasses.field(default_factory=dict)

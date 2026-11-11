@@ -665,3 +665,46 @@ def test_surface_prior_never_overrides_canopy():
     state.final_label = np.full(len(state.final_label), 4, dtype=np.int8)
     apply_surface_prior(state, CleanupConfig(surface_prior=True), boot)
     assert (state.final_label == 4).all()
+
+
+# ── boundary figures ─────────────────────────────────────────────────────────
+
+def test_boundary_figures_render_when_the_stage_has_run(synthetic_river, tmp_path):
+    from lidarwater._stages import boundary, canopy, features, surface
+    from lidarwater.plots import write_all
+
+    cloud, is_water, _ = synthetic_river
+    config = PipelineConfig()
+    state = features.run(cloud, config.features)
+    state.wcn_proba = np.where(is_water, 0.95, 0.05).astype(np.float32)
+    state.wcn_xgb_proba = np.where(is_water, 0.90, 0.10).astype(np.float32)
+    surface.run(state, config.surface, geometry_only=True)
+    state.canopy_pred = np.zeros(len(cloud), dtype=np.int8)
+    canopy.merge(state)
+    boundary.run(state, config.boundary)
+
+    assert state.boundary_field is not None, "the heatmap needs the probability field"
+    assert state.boundary_field_origin is not None
+
+    written = {p.name for p in write_all(state, tmp_path / "plots",
+                                         boundary_config=config.boundary)}
+    assert "boundary_heatmap.png" in written
+    assert "boundary_overlay.png" in written
+
+
+def test_boundary_figures_are_skipped_without_a_boundary_config(synthetic_river, tmp_path):
+    """write_all must stay usable for callers that never ran the stage."""
+    from lidarwater._stages import canopy, features, surface
+    from lidarwater.plots import write_all
+
+    cloud, is_water, _ = synthetic_river
+    config = PipelineConfig()
+    state = features.run(cloud, config.features)
+    state.wcn_proba = np.where(is_water, 0.95, 0.05).astype(np.float32)
+    state.wcn_xgb_proba = np.where(is_water, 0.90, 0.10).astype(np.float32)
+    surface.run(state, config.surface, geometry_only=True)
+    state.canopy_pred = np.zeros(len(cloud), dtype=np.int8)
+    canopy.merge(state)
+
+    written = {p.name for p in write_all(state, tmp_path / "plots")}
+    assert not any(n.startswith("boundary_") for n in written)

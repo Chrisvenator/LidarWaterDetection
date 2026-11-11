@@ -428,6 +428,26 @@ Caveats, honestly stated:
   labels from `ZoneConfig`'s absolute elevation bands, which are Pielach's
   unless rebased.
 
+### Diagnostic figures
+
+`run_dataset.py` writes six figures into `runs/<dataset>/plots/`:
+
+| figure | shows |
+|---|---|
+| `classes_topdown.png` | one panel per class, plan view |
+| `cross_section.png` | elevation against x through a slice |
+| `elevation_profile.png` | height above the water surface, per class |
+| `water_probability.png` | each model head's probability, spatially |
+| `boundary_heatmap.png` | the probability field the boundary is cut from, with the contours |
+| `boundary_overlay.png` | those contours over the classified points |
+
+The heatmap is diverging (blue water, red land, neutral grey at 0.5) because
+0.5 is the decision boundary, not an arbitrary midpoint. Contour levels are
+distinguished by line style as well as position, so they stay separable in
+print. Contours bunched tightly together mean a sharp probability transition
+and therefore a well-determined boundary; a wide spread between the 0.35 and
+0.65 lines means the opposite.
+
 ### The uncertain class
 
 `final_label == 2` marks points the two model heads disagree on, or that fall

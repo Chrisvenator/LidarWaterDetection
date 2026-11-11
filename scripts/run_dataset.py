@@ -119,7 +119,8 @@ def main() -> int:
 
     report_labels(state)
     print(f"\nwrote {write_outputs(state, workspace, profile)}")
-    for figure in write_all(state, workspace.plot_dir, profile.water_level_z):
+    for figure in write_all(state, workspace.plot_dir, profile.water_level_z,
+                            boundary_config=config.boundary):
         print(f"      {figure}")
     return 0
 
