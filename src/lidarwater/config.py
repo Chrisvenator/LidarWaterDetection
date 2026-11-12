@@ -115,7 +115,8 @@ class ZoneConfig:
 
 BOOTSTRAP_ZONES = "zones"
 BOOTSTRAP_SURFACE = "surface"
-BOOTSTRAP_METHODS = frozenset({BOOTSTRAP_ZONES, BOOTSTRAP_SURFACE})
+BOOTSTRAP_SHEET = "sheet"
+BOOTSTRAP_METHODS = frozenset({BOOTSTRAP_ZONES, BOOTSTRAP_SURFACE, BOOTSTRAP_SHEET})
 
 
 @dataclasses.dataclass(frozen=True)
@@ -133,6 +134,16 @@ class BootstrapConfig:
     diluted by riverbed returns. Measured on Inn against hand-labelled
     points: 97.2% balanced accuracy (100% water, 94.4% land), against 61.0%
     for the same threshold search over all points' reflectance.
+
+    ``"sheet"`` is ``"surface"`` made to work under trees. A cell's top is
+    canopy wherever there is canopy (half of Pielach's cells), and canopy is
+    as dark as water, so the top surface is replaced by the highest *dense*
+    elevation layer: crowns scatter their returns over metres, water and
+    ground stack theirs into one 0.1 m bin. Labels are then given relative to
+    that sheet, never to the whole column: at or below a dark coherent sheet
+    is water, above it is land (a crown over the river); elsewhere the sheet
+    and what stands on it are land and whatever lies beneath is left
+    unlabelled, since returns from under a surface cannot be dry ground.
     """
 
     method: str = BOOTSTRAP_ZONES
@@ -142,6 +153,11 @@ class BootstrapConfig:
     coherence_max_m: float = 0.15     # max deviation from the neighbourhood sheet
     sheet_filter_cells: int = 7       # median-filter width defining that neighbourhood
     min_points_per_cell: int = 5
+    # "sheet" only. The bin matches the one the site profile finds the water
+    # level with; a layer is dense when it holds at least this share of the
+    # cell's fullest bin.
+    sheet_bin_m: float = 0.10
+    dense_layer_ratio: float = 0.5
 
     def __post_init__(self) -> None:
         if self.method not in BOOTSTRAP_METHODS:
