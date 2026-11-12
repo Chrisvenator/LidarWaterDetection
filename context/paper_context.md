@@ -73,7 +73,7 @@ Strength column: **hard** = measured against human/independent labels,
 | Claim | Number | Source | Strength |
 |---|---|---|---|
 | Waveform-only classification works within a site | 11 scalars: AUC **0.890 [0.806, 0.946]** Pielach (n = 26,645, 28 blocks), **0.993 [0.990, 0.995]** Inn (n = 180,394, 199 blocks). Raw grid: 0.888 [0.800, 0.949] / 0.999 [0.999, 1.000]. 10 m block CV | `src/diagnostics/measure_transfer.py` → `runs/transfer/transfer_results.json`; `context/cross_site_transfer.md` §1 | **hard on Pielach** (independent reference, wide interval); **agreement with hand-drawn regions on Inn** (easy interiors, dev-era). Old 0.989 / 0.972 were pipeline-label scores (reproduced as 0.980 / 0.988) — superseded (§12) |
-| …same, on the 65 picked points | AUC 1.000, balanced 0.972 [0.929, 1.0] | ibid. §1 | **uninformative**: biased set, saturated. Old 0.902 withdrawn |
+| …same, on the 65 picked points | AUC 1.000, balanced 0.972 [0.929, 1.0] | ibid. §1 | **uninformative**: saturated on a small set with an unusually bright land sample. Old 0.902 withdrawn |
 | Waveform-only transfer fails | Pielach→Inn: 0.567 [0.551, 0.580] raw, 0.430 [0.413, 0.448] site-rank, grid 0.647 [0.593, 0.690]. Inn→Pielach: 0.702 [0.602, 0.773] raw, 0.725 [0.623, 0.805] site-rank, grid 0.638 [0.590, 0.670]. Gap to within-site (paired): 0.426 [0.413, 0.443] and 0.188 [0.116, 0.266] | ibid. §2 | **hard, re-measured.** Pielach→Inn is chance; Inn→Pielach is weak but above chance, balanced accuracy 0.52–0.57. "Chance in both directions" is too strong |
 | Dropping the four non-transferring features does not rescue transfer | 7 features: 0.454 / 0.442 (Pielach→Inn), 0.711 / 0.627 (Inn→Pielach) | ibid. §2 | **hard, confirmed** |
 | Only reflectance *rank* transfers | Pielach→Inn reflectance rank: **0.601 [0.486, 0.740]** on regions (0.970 on the 65). Inn→Pielach: 0.766 [0.633, 0.860] | ibid. §3 | **WITHDRAWN.** Interval includes 0.5 on the regions; reflectance does not order the classes on Inn's regions at all (own AUC 0.457 [0.303, 0.577]) |
@@ -125,11 +125,11 @@ Strength column: **hard** = measured against human/independent labels,
 - *The 65 picked points* (`water.txt` 29, `land.txt` 21, `proabably-land.txt`
   15; file times 2026-09-06 17:43, before the Inn site models existed at 21:07
   and before `scripts/sample_for_labeling.py` wrote its strata at 22:31 — none
-  of the 65 is in any stratum file, so they were not sampled; author confirms "clicked by eye").
+  of the 65 is in any stratum file, so they did not come from that script. Author, 2026-11-12: they were picked at random — the earlier "clicked by eye" note here was wrong. Their plan-view extent, 171 × 98 m, covers the cloud's 172 × 101 m, and 46 of 65 inside regions holding 78.2% of the cloud is what a random draw gives (binomial p = 0.10)).
   **46 of 65 lie inside the regions** (25 water, 13 land, 8 probably-land), so
   the two label sets are not independent. The 19 outside are correct in every
   configuration including base, so they discriminate nothing.
-  Bias: all 36 land points have `wcn_proba` < 0.004 — no land point near the
+  Composition, measured — not a statement about how they were picked: all 36 land points have `wcn_proba` < 0.004 — no land point near the
   decision boundary was picked. 34 of 36 are brighter than 0 dB; of the
   regions' land points only 41% are. All 15 probably-land points sit in one
   31 × 16 m patch (9 ten-metre blocks). 65 points occupy 54 ten-metre blocks.
@@ -248,10 +248,10 @@ model is worse than a noisy one.
 3. **Inn label sets. — RESOLVED as a question, and the answer is bad.** The
    "208k hand labels" are 180,394 unique points inside seven hand-drawn
    regions, cut from the pipeline's own output cloud, with heavy overlap
-   between files. The 65 points are hand-picked, 46 of them inside those same
+   between files. The 65 points were picked at random (author, 2026-11-12), 46 of them inside those same
    regions, and their land sample is unrepresentatively bright. Neither set
    supports the AUC 0.958 vs 0.745 comparison. Author confirms the regions were drawn from
-   reflectance and geometry, and the 65 were clicked by eye.
+   reflectance and geometry.
 4. **Optional flags tuned on the test site. — RESOLVED by reporting base
    configuration.** Base, current code: 99.4% [99.1, 99.7] on regions, 96.6% [91.4, 100] on
    the 65 (stale models: 97.1% / 93.1%; see §11 Q3). No reach of Inn exists that the flags were not tuned on: the regions
@@ -345,8 +345,16 @@ optional flags. *Withdrawn:* "99.9% vs 208k hand labels", "192k hand labels",
 "83% of the cloud". *Relabelled:* every number on them is "agreement with
 hand-drawn regions (development set)". Detail in the provenance note under §3.
 
-**Q2 — The 65 "blind" points. Verdict: not blind in space, biased to easy.**
-Clicked by eye. 46 of 65 lie inside the regions. No land point has
+**Q2 — The 65 "blind" points. Verdict: randomly picked, but not independent
+of the regions, and their land sample is easy.**
+Picked at random by the author (stated 2026-11-12; this section first said
+"clicked by eye", which was wrong). Checked 2026-11-12 against
+`runs/Inn_audit_refit`: their spread is consistent with a random draw, but 34
+of 36 land points brighter than 0 dB cannot be a uniform draw from the cloud's
+land — 41.5% of the cloud's non-water points are that bright (binomial
+p ≈ 2e-11) — so either land was drawn from a brighter subset or the picks
+were not uniform over points. Cause not established; the consequence below
+stands either way. 46 of 65 lie inside the regions. No land point has
 `wcn_proba` above 0.004; 34 of 36 land points are brighter than 0 dB against
 41% of region land. Measured consequence: a bare reflectance cut at +0.25 dB
 scores 97.2% [92.9, 100] on the 65 and **70.5% [64.3, 78.4] on the regions**
@@ -373,13 +381,13 @@ with, and current code does not reproduce them: their recorded
 `phase2_best_val_f1` is 0.954, the fresh fit's is 0.991, and the two base
 outputs agree on only 95.9% of points. The fit is seeded (`WcnConfig` seed 42),
 so this is code drift between 6 and 21 September, not seed noise
-(a second same-seed fit, `runs/Inn_audit_refit2`, gives 99.39% [99.1, 99.6] and 96.6% — within 0.02 points of the first, though only 99.1% of labels are identical, so GPU training is not bitwise deterministic). Consequences:
+(a second same-seed fit, `runs/Inn_audit_refit2`, gives 99.39% [99.1, 99.6] and 96.6% — within 0.02 points of the first, though only 99.1% of labels are identical. §13 traced that to the v6 autolabel CNN, which `fit()` does not seed: with torch seeded before the fit, two same-seed fits are bitwise identical). Consequences:
 - The flag ladder (97.4 → 98.7 → 99.3 → 99.9) was measured on models that the
   committed code no longer produces. With current models the three flags are
   worth **0.5 points** on the regions (99.4 → 99.9), not 2.8. Most of what the
   flags "fixed" was a weaker model.
 - Abstract number: **base configuration, current code: 99.4% [99.1, 99.7]
-  agreement with hand-drawn regions; 96.6% [91.4, 100] on 65 hand-picked
+  agreement with hand-drawn regions; 96.6% [91.4, 100] on 65 randomly picked
   points.** Both are development-era label sets; say so.
 - No reach of Inn exists that the flags were not tuned on, so no flags-on
   number is reportable as a test result.
@@ -432,7 +440,7 @@ the reference over-calls. Not adjudicable without field truth.
   result; "+0.25 dB reflectance gets 97.2%" as a site property.
 - *Downgraded:* Pielach F1 0.931 → 0.911 [0.84, 0.95]; elevation leakage
   97.68% (run not on disk; z rule matches the pipeline on regions);
-  reflectance-rank transfer 0.958 and 0.958 → 0.745 (biased 65); AUC 0.902;
+  reflectance-rank transfer 0.958 and 0.958 → 0.745 (the 65's bright land sample); AUC 0.902;
   survey points; every `cross_site_transfer.md` number (no committed script).
 - *Confirmed:* surface bootstrap 97.2% on the 65 and 96.2% on regions;
   residual base-config error is mostly abstention; margin under-call is real
@@ -500,3 +508,191 @@ two-survey negative result without a mechanism, which is thin for a lead
 thesis; B or C would have to carry more of the paper, and both were also
 downgraded in §11. That choice is the author's.
 
+---
+
+## 13. Model ablation (2026-11-12)
+
+Source for every number: `python src/diagnostics/ablate_models.py`, which
+writes `runs/ablation/ablation_results.json` and `ablation_tables.txt`
+(code at commit 9780156 plus the script; no pipeline code changed,
+`pytest -m golden` 6 passed). Labels and scoring as in §11–12: water
+(classes 1, 3) against everything else, abstention is a miss, 95% intervals
+from 2,000 resamples of 10 m blocks, differences paired on the same draws.
+All three optional flags off.
+
+**Fits.** Each is one from-scratch `WaterPipeline.fit()`; every arm of a fit
+shares its bootstrap labels and trained models and differs only in what
+reaches the geometry stage.
+- Inn: `derive_site_config` (surface bootstrap, 12 scalars), seed 42 twice,
+  seed 43 once.
+- Pielach "shipped": `PipelineConfig()` (z-band bootstrap, 11 scalars),
+  seed 42 twice, seed 43 once.
+- Pielach "pretrained": the weights in `models/` through `classify()` — not a
+  fit, a yardstick for the published figure. Arms 3b and 8 are missing there
+  because the shipped `v6_deep.pt` has pre-library layer names and does not
+  load.
+- Pielach "derived": `derive_site_config` on Pielach, seed 42 once (see the
+  last finding below).
+
+**Arms.** 1–6 as asked. Added, with the reason:
+- 3b logistic regression on the same scalars and the WCN's training labels,
+  into geometry — is any non-linear model needed?
+- 7a/b/c the model probabilities thresholded at 0.5 with no geometry — what
+  does geometry add to a model?
+- 8 the WCN's own training labels (the v6-anchored geometry pass) — does the
+  WCN improve on its teacher?
+
+Arm 4 design: bootstrap labels go to geometry as hard probabilities, water
+(1, 1), land (0, 0), unlabelled points as a disagreeing pair (XGBoost 1,
+deep 0). The stage reads a disagreeing pair as "uncertain" and never uses it
+as an anchor for footprint, surface or bed, so unlabelled points stay
+undecided unless geometry claims them. Elevation rule: `z < level + m` with
+`level` the site profile's densest 0.1 m z-bin and m = 0.05 m, the top edge
+of that bin (nothing tuned); m = 0.00, 0.10, 0.30 are in the output to show
+sensitivity. Reflectance: Otsu over all points. The canopy stage is not
+rerun per arm; its merge only relabels land and uncertain points.
+
+### Arms by site (seed 42; balanced accuracy / F1 [95%])
+
+| Arm | Inn regions, n = 180,394, 199 blocks | Pielach from scratch, n = 26,645, 28 blocks | Pielach pretrained |
+|---|---|---|---|
+| 1 full pipeline | 0.9938 [0.9907, 0.9964] / 0.9943 [0.9915, 0.9967] | 0.850 [0.783, 0.902] / 0.862 [0.775, 0.909] | 0.868 [0.783, 0.930] / 0.906 [0.835, 0.950] |
+| 2 WCN only → geometry | 0.9943 [0.9916, 0.9967] / 0.9944 | 0.830 [0.770, 0.878] / 0.832 [0.753, 0.877] | 0.869 / 0.902 [0.826, 0.946] |
+| 3 XGBoost only → geometry | 0.9891 [0.9856, 0.9922] / 0.9897 | 0.864 [0.791, 0.921] / 0.889 [0.806, 0.931] | 0.872 / 0.912 [0.846, 0.953] |
+| 3b logistic → geometry | 0.792 [0.775, 0.807] / 0.755 | 0.840 [0.778, 0.899] / 0.854 [0.783, 0.907] | — |
+| 4 bootstrap → geometry | 0.9932 [0.9900, 0.9962] / 0.9935 | 0.764 [0.713, 0.806] / 0.731 [0.656, 0.776] | same bootstrap |
+| 5 bootstrap labels | 0.962 [0.947, 0.976] / 0.987 [0.979, 0.993] | 0.721 [0.684, 0.751] / 0.634 [0.564, 0.676] | same bootstrap |
+| 6a elevation, m = 0.05 | 0.950 [0.913, 0.976] / 0.984 [0.974, 0.993] | 0.853 [0.741, 0.942] / 0.928 [0.868, 0.968] | same rule |
+| 6b reflectance Otsu | 0.459 [0.387, 0.548] / 0.518 | 0.731 [0.649, 0.798] / 0.741 [0.643, 0.809] | same rule |
+| 7a WCN+XGB agree, no geometry | 0.9912 / 0.9931 | 0.828 / 0.829 | 0.860 / 0.888 |
+| 7b WCN ≥ 0.5, no geometry | 0.9945 [0.9933, 0.9957] / 0.9973 | 0.832 / 0.835 | 0.871 / 0.902 |
+| 7c XGBoost ≥ 0.5, no geometry | 0.983 / 0.9908 | 0.848 / 0.874 | 0.848 / 0.890 |
+| 8 WCN training labels | 0.9922 / 0.9922 | 0.811 / 0.802 | — |
+
+Seed 43, arm 1/2/3 F1: Inn 0.9947 / 0.9949 / 0.9911; Pielach 0.880 / 0.842 /
+0.894. Elevation margins 0.00 / 0.10 / 0.30 m, F1: Inn 0.986 / 0.984 / 0.978;
+Pielach 0.927 / 0.921 / 0.896.
+
+On the 65 picked Inn points (n = 65, secondary; their land sample is
+unusually bright, §3): arms 1, 2 and 4 all 0.966 [0.912, 1.0] balanced
+accuracy, arm 3 0.931 [0.859, 0.985], arm 5 0.972, elevation 0.736
+[0.641, 0.840], 7b 1.0. Nothing there contradicts the regions; n is too
+small to separate arms 1–5.
+
+### Paired differences against arm 1 (arm minus arm 1; seed 42, seed 43 in brackets where it matters)
+
+| Arm | Inn Δ balanced accuracy | Inn Δ F1 | Pielach scratch Δ balanced accuracy | Pielach scratch Δ F1 |
+|---|---|---|---|---|
+| 2 WCN only | +0.0006 [−0.0002, 0.0019] | +0.0001 [−0.0002, 0.0006] | −0.020 [−0.027, −0.012] | −0.030 [−0.038, −0.018] |
+| 3 XGBoost only | −0.0047 [−0.0060, −0.0034] (s43 −0.0037 [−0.0047, −0.0027]) | −0.0046 [−0.0060, −0.0033] | +0.014 [−0.005, 0.035] (s43 +0.006 [−0.007, 0.022]) | +0.026 [0.009, 0.048] (s43 +0.014 [0.004, 0.031]) |
+| 3b logistic | −0.202 [−0.217, −0.187] | −0.239 | −0.010 [−0.054, 0.030] | −0.008 [−0.062, 0.048] |
+| 4 bootstrap → geometry | −0.0005 [−0.0025, 0.0017] (s43 −0.0009 [−0.0030, 0.0013]) | −0.0008 [−0.0024, 0.0006] | −0.086 [−0.107, −0.059] | −0.131 [−0.161, −0.098] |
+| 5 bootstrap | −0.032 [−0.047, −0.017] | −0.0074 [−0.0153, −0.0008] | −0.129 [−0.165, −0.086] | −0.228 [−0.265, −0.186] |
+| 6a elevation 0.05 | −0.044 [−0.081, −0.018] | −0.010 [−0.021, −0.002] | +0.004 [−0.068, 0.077] | +0.065 [0.026, 0.123] (s43 +0.048 [0.012, 0.107]) |
+| 6b reflectance | −0.534 [−0.607, −0.446] | −0.476 | −0.119 [−0.189, −0.054] | −0.122 [−0.176, −0.054] |
+| 7a models, no geometry | −0.0025 [−0.0052, 0.0004] | −0.0012 [−0.0037, 0.0015] | −0.022 [−0.064, 0.017] | −0.034 [−0.083, 0.013] (s43 −0.050 [−0.093, −0.006]) |
+| 7b WCN, no geometry | +0.0008 [−0.0018, 0.0035] | +0.0030 [0.0007, 0.0055] | −0.018 [−0.057, 0.020] | −0.027 [−0.074, 0.018] |
+| 8 training labels | −0.0016 [−0.0029, 0.0002] | −0.0021 [−0.0030, −0.0012] | −0.039 [−0.053, −0.022] | −0.061 [−0.076, −0.040] |
+
+The key contrast, WCN only minus XGBoost only: Inn +0.0053 [0.0037, 0.0071]
+balanced accuracy, +0.0047 [0.0035, 0.0061] F1 (seed 43: +0.0042
+[0.0030, 0.0055]); Pielach from scratch −0.035 [−0.054, −0.014] balanced
+accuracy, −0.056 [−0.075, −0.040] F1 (seed 43: −0.052 [−0.067, −0.042] F1);
+Pielach pretrained −0.003 [−0.021, 0.009] / −0.010 [−0.029, −0.0004].
+Pretrained Pielach against arm 1: XGBoost only +0.006 F1 [−0.004, 0.023],
+elevation +0.021 F1 [−0.004, 0.064], arm 4 −0.175, arm 5 −0.272.
+
+### Noise floor
+
+- **Same seed: zero.** Two seed-42 fits are bitwise identical in every saved
+  array on both sites (labels and all probabilities; agreement 1.0, every
+  delta 0.0). The script seeds torch and numpy before `fit()`; the pipeline
+  itself seeds only the WCN stage, not the v6 autolabel CNN. That, not the
+  GPU, is the likely source of the 99.1% same-seed agreement found on
+  2026-11-11 (§11); not tested by removing the seeding.
+- **Other seed (42 minus 43)** is therefore the noise floor:
+
+| Arm | Inn Δ balanced accuracy | Inn Δ F1 | Inn cloud agreement | Pielach Δ balanced accuracy | Pielach Δ F1 | Pielach cloud agreement |
+|---|---|---|---|---|---|---|
+| 1 full | −0.0004 [−0.0007, −0.0002] | −0.0004 | 0.9941 | −0.012 [−0.024, 0.001] | −0.018 [−0.031, −0.003] | 0.9927 |
+| 2 WCN only | −0.0004 [−0.0009, 0.0002] | −0.0005 | 0.9917 | −0.007 [−0.015, 0.003] | −0.010 [−0.020, 0.002] | 0.9897 |
+| 3 XGBoost only | −0.0014 [−0.0023, −0.0008] | −0.0015 | 0.9928 | −0.004 [−0.008, 0.001] | −0.006 [−0.010, −0.001] | 0.9952 |
+
+One pair of seeds per site, so this is an order of magnitude, not a
+distribution: about 0.001 on Inn, about 0.01–0.02 on Pielach.
+
+### Verdict
+
+**The deep model helps on one site only, by half a point, and is not
+necessary on either.**
+
+- *Inn:* WCN only beats XGBoost only by +0.005 balanced accuracy, interval
+  clear of zero under both seeds and 3–4 times the seed spread. So by the
+  criterion set for this ablation the deep model wins on Inn. But arm 4, with
+  **no learned model at all**, is indistinguishable from the full pipeline
+  (−0.0005 [−0.0025, 0.0017]; seed spread 0.0004). The WCN also does not beat
+  its own training labels on balanced accuracy (+0.0016 [−0.0002, 0.0029];
+  F1 +0.0021 [0.0012, 0.0030]). What the WCN beats on Inn is XGBoost, not
+  the absence of a model.
+- *Pielach:* fitted from scratch, the WCN is the weaker head: WCN only is
+  0.056 F1 below XGBoost only (interval excludes zero under both seeds, three
+  times the seed spread), and XGBoost only is at or above the full pipeline
+  (+0.026 F1 [0.009, 0.048]; +0.014 [0.004, 0.031]). With the pretrained
+  weights the two heads are level (−0.010 F1). On no Pielach fit does the WCN
+  beat XGBoost.
+- Read as the task's three forms: this is "helps on one site only" by the
+  letter and "isn't necessary" in substance. The supportable claim is
+  label-free classification; the model choice is secondary, and on these two
+  surveys XGBoost on the scalars is the safer default.
+
+**Geometry or model?** It depends on the site, and neither answer flatters
+the model.
+- *Inn — the bootstrap does most of the work.* The elevation-free surface
+  bootstrap alone is already 0.962 / 0.987 (arm 5). Geometry adds +0.031
+  balanced accuracy [0.017, 0.046] and gets to the full pipeline's score
+  (arm 4). A model without geometry gets there too (7b, 0.9945). Either
+  suffices on top of the bootstrap; stacking both adds nothing measurable
+  (arm 1 minus 7a: +0.0025 [−0.0004, 0.0052]).
+- *Pielach — the model does the work.* The z-band bootstrap labels less than
+  half the reference water (arm 5 water recall 0.47, F1 0.634). Geometry on
+  top adds +0.097 F1 [0.062, 0.131] but stops at 0.731 (arm 4). The learned
+  model takes it to 0.86–0.89; geometry after the model adds at most
+  +0.034 F1 [−0.013, 0.083], not distinguishable from zero under seed 42.
+  A model is needed here, a deep one is not: logistic regression into
+  geometry is level with the full pipeline (−0.008 F1 [−0.062, 0.048]).
+- Logistic regression fails on Inn (0.792), so a linear model is not a
+  general substitute; XGBoost is.
+
+**Three things the ablation turned up that a reviewer will find too.**
+1. *On Pielach a plain elevation rule matches or beats the pipeline.*
+   `z < 260.29 + 0.05` scores F1 0.928 [0.868, 0.968] against 0.862 from
+   scratch (+0.065 [0.026, 0.123]) and 0.906 pretrained (+0.021
+   [−0.004, 0.064]); balanced accuracy is level in both cases. The rule is
+   untuned, and the 0.00 and 0.10 m margins give 0.927 and 0.921. Its recall
+   is 0.98 at land recall 0.72; the pipeline trades the other way (0.79 /
+   0.91). This is consistent with CLAUDE.md's "the WCN learns to reproduce an
+   elevation rule" — on Pielach the rule it is taught is no worse than the
+   model. On Inn the rule loses clearly (−0.044 balanced accuracy
+   [−0.081, −0.018]), though it still reaches 0.950.
+2. *A from-scratch library fit of Pielach does not reproduce the published
+   figure.* 0.862 (seed 42) and 0.880 (seed 43) against 0.906 [0.835, 0.950]
+   for the shipped weights run through the library (the documented 0.911 came
+   from the shipped point cloud; the 0.005 gap was not chased). The shipped
+   weights were trained by the legacy scripts, not by `fit()`. Two seeds
+   cannot say whether 0.906 is inside the seed distribution.
+3. *The label-free configuration fails on Pielach.* `derive_site_config`
+   switches Pielach to the surface bootstrap and adds reflectance; fitted
+   that way the full pipeline scores 0.603 [0.548, 0.681] / F1 0.415
+   [0.278, 0.586], the bootstrap alone 0.552 / 0.290. The cause was not
+   investigated (46% of the cloud stands more than 3 m above ground, so the
+   top surface of most cells is canopy — a hypothesis, not a measurement).
+   Consequence: Pielach is classified without *reference* labels, but with
+   z-bands verified by eye in CloudCompare, so "no human labels" holds on Inn
+   and only in the weaker sense "no per-point labels" on Pielach.
+
+**For §2:** no thesis there rests on the deep model, and none should. For
+B, what the two sites support is: a bootstrap rule plus a small learned model
+(Pielach) or plus geometry (Inn) classifies water within a survey without
+per-point labels, and which bootstrap works is site-specific. B's "F1 0.911"
+needs the elevation rule's 0.928 next to it. For C, finding 1 is direct
+support on Pielach: the model does not beat the elevation rule it was taught.
