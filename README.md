@@ -143,7 +143,7 @@ cannot separate recording from site.
 
 Reflectance as a percentile rank within its own cloud does **not** transfer
 either (Pielach-trained, Inn-tested: AUC 0.601 [0.486, 0.740]); an earlier
-0.958 came from 65 hand-picked points biased toward bright land.
+0.958 came from 65 picked points whose land sample is unusually bright.
 
 Use `fit()` per survey. Full measurements and method:
 **[context/cross_site_transfer.md](context/cross_site_transfer.md)**.

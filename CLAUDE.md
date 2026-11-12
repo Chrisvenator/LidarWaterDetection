@@ -163,8 +163,13 @@ things the Pielach defaults actually depend on and rebases them: water level
 percentile shifts the dB gates; waveform energy distribution picks
 `FeatureConfig.grid_origin`; height above a per-cell ground surface decides
 whether the site has canopy at all. Architecture, hyperparameters and
-dimensionless ratios are untouched — on the Pielach cloud the derivation is
-an exact no-op, so `pytest -m golden` still passes.
+dimensionless ratios are untouched. `pytest -m golden` still passes because it
+runs `PipelineConfig()`, not the derived config. On the Pielach cloud the
+derivation is **not** a no-op (measured 2026-11-12): thresholds move by only
+2 mm / 0.001 dB, but it also selects the surface bootstrap, appends
+`reflectance_dB` and sets `fallback_tol_m` 0.3 -> 1.0, and a Pielach fit with
+it fails (F1 0.415 [0.28, 0.59] against 0.86-0.88 with `PipelineConfig()`;
+`context/paper_context.md` §13). Fit Pielach with `PipelineConfig()` only.
 
 Outputs go to `runs/<dataset>/` (`Workspace`), never into the repo-level
 `models/`, `pointclouds/`, `data_processed/` trees, which belong to Pielach.
@@ -196,7 +201,7 @@ Outputs go to `runs/<dataset>/` (`Workspace`), never into the repo-level
   dimensionless by design — `reflectance_dB` is left out because its dB scale
   is a property of the scanner and survey, so it does not transfer between
   sites. On Inn it is a strong water/land signal, but not enough on its own: a
-  single reflectance threshold at +0.25 dB gets 97.2% on the 65 hand-picked
+  single reflectance threshold at +0.25 dB gets 97.2% on the 65 picked
   points but only 70.5% [64.3, 78.4] on the hand-drawn regions (land recall
   41%), because the 65 contain almost no dark vegetated land (see "Inn
   evaluation labels" below). On geometric proxies reflectance alone scores
@@ -225,7 +230,7 @@ Outputs go to `runs/<dataset>/` (`Workspace`), never into the repo-level
   median reflectance of the *surface layer only*. Isolating the surface is
   what makes the reflectance histogram bimodal — over all points the deepest
   Otsu valley falls inside the water mode (-7.10 dB, 61.0% balanced accuracy
-  on the 65 hand-picked points); over surface layers it lands at -0.46 dB and
+  on the 65 picked points); over surface layers it lands at -0.46 dB and
   97.2% (100% water, 94.4% land), within 0.7 dB of the 65-point optimum. It
   also holds on the hand-drawn regions (96.2% [94.8, 97.6]) where a bare
   reflectance cut collapses to 70.5%, so isolating the surface layer is doing
@@ -252,8 +257,13 @@ Outputs go to `runs/<dataset>/` (`Workspace`), never into the repo-level
   sums over overlapping files — withdrawn. These regions were the development
   set for all three optional flags below, so numbers on them are agreement
   with a development set, not a test result.
-- *65 hand-picked points* (`*.txt`): clicked by eye, 46 of them inside the
-  regions, biased to easy points. Not blind.
+- *65 picked points* (`*.txt`): picked at random by the author (stated
+  2026-11-12; earlier notes said "clicked by eye" — wrong). 46 of them lie
+  inside the regions, so the two sets are not independent. Their spread is
+  consistent with a random draw, but their land sample is not the cloud's
+  land: 34 of 36 land points are brighter than 0 dB against 41% of the
+  cloud's non-water points, so reflectance-based scores on them are inflated.
+  n = 65 is small; treat them as a secondary check.
 - Score with 10 m block-bootstrap intervals, each point counted once.
 
 Base configuration (all three flags off), current code, fresh fit: **99.4%
@@ -299,7 +309,8 @@ difference is the recording itself (Inn's echo is 69 samples wide at half
 maximum, Pielach's 3; an Inn record ends 7 Pielach-equivalent samples after
 its first return). **Reflectance rank does not transfer**: Pielach -> Inn
 0.601 [0.486, 0.740] on the regions; the old 0.958 and the "0.958 -> 0.745"
-drop were artefacts of the 65 biased points — withdrawn.
+drop were artefacts of the 65 picked points' unusually bright land sample —
+withdrawn.
 
 Measured site profiles: Pielach — water 260.29 m, reflectance p5/50/95
 -28.6/-22.3/-12.3 dB, energy gate 0.845, 46.1% of points >3 m above ground.

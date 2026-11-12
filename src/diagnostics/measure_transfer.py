@@ -6,7 +6,8 @@
 Regenerates every figure in ``context/cross_site_transfer.md``. Labels:
 
 * Inn — the hand-drawn regions (loaded by ``audit_inn_labels``), with the 65
-  hand-picked points as a secondary, biased check.
+  randomly picked points as a secondary check (small, and their land sample
+  is unusually bright).
 * Pielach — the Mandlburger reference matches
   (``validation_results/tables/per_point_matches.csv``).
 * Pipeline output appears only in rows whose label column says ``pipeline``.
@@ -67,7 +68,7 @@ OUT_DIR = ROOT / "runs" / "transfer"
 CACHE_DIR = OUT_DIR / "cache"
 PARAMS_JSON = CACHE_DIR / "harmonisation.json"
 
-HONEST, PICKED, PIPELINE = "honest", "picked65 (biased)", "pipeline"
+HONEST, PICKED, PIPELINE = "honest", "picked65", "pipeline"
 PIPELINE_WATER, PIPELINE_UNCERTAIN = (1, 3), 2
 MAX_JOIN_DIST_M = 0.001        # Pielach matches are the cloud's own points, shifted
 

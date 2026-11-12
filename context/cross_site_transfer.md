@@ -21,8 +21,9 @@ transfer, and the export format is *not* shown to be the cause.
   199 ten-metre blocks. Pielach: the Mandlburger reference matches, 26,645
   points (17,837 water) in 28 blocks; the join back to our cloud is exact
   (max distance < 1e-9 m, every match a distinct cloud row, checked on every
-  run). Secondary columns, never mixed in: Inn's 65 hand-picked points
-  ("65, biased") and the pipeline's own decided labels over the whole cloud
+  run). Secondary columns, never mixed in: Inn's 65 randomly picked points
+  ("65"; small, and their land sample is unusually bright — see
+  `paper_context.md` §11 Q2) and the pipeline's own decided labels over the whole cloud
   ("pipeline": 228,454 Pielach points in 40 blocks, 223,810 Inn points in 203).
 - **Model.** XGBoost, fixed hyperparameters, seed 0 (`XGB_PARAMS` in the
   script). Two consecutive full runs gave identical figures.
@@ -69,7 +70,7 @@ Balanced accuracy: Pielach 0.810 [0.713, 0.883] / 0.808; Inn 0.964
   points are easy", not as a test result.
 - The raw grid beats the scalars only on Inn (0.999 vs 0.993); on Pielach they
   are indistinguishable.
-- Inn's 65 picked points (biased; model fitted on regions outside their
+- Inn's 65 picked points (bright land sample; model fitted on regions outside their
   blocks): AUC 1.000, balanced accuracy 0.972 [0.929, 1.0]. They no longer
   discriminate anything.
 
@@ -96,7 +97,7 @@ same points minus the transferred one (paired interval).
   signal is not usable as a classifier.
 - Site-rank encoding does not help in either direction. Dropping the four
   export-format features does not help either.
-- Secondary columns. On the 65 (biased), Pielach → Inn scalars give
+- Secondary columns. On the 65, Pielach → Inn scalars give
   0.479 [0.345, 0.622] raw and 0.520 site-rank, as before. On pipeline labels
   Pielach → Inn is 0.561 / 0.475 and Inn → Pielach 0.494 / 0.441: the
   above-chance Inn → Pielach signal exists only against the reference labels.
@@ -105,7 +106,7 @@ same points minus the transferred one (paired interval).
 
 Everything site-rank encoded.
 
-| | Pielach → Inn, regions | Pielach → Inn, 65 (biased) | Inn → Pielach |
+| | Pielach → Inn, regions | Pielach → Inn, 65 | Inn → Pielach |
 |---|---|---|---|
 | reflectance rank alone | 0.601 [0.486, 0.740] | 0.970 [0.906, 1.0] | 0.766 [0.633, 0.860] |
 | waveform 7 + reflectance | 0.633 [0.610, 0.661] | 0.836 [0.726, 0.918] | 0.789 [0.663, 0.877] |
@@ -265,7 +266,7 @@ rung 3 was chosen after seeing that Inn's records are cut short.
 |---|---|---|---|
 | within-site, Pielach, 11 / grid | 0.989 / 0.983 | 0.890 / 0.888 | scored against pipeline labels (reproduced: 0.980 / 0.975); reference set is harder and independent |
 | within-site, Inn, 11 / grid | 0.972 / 0.986 | 0.993 / 0.999 | pipeline labels then; regions now |
-| Inn "unbiased" on the 65 | 0.902 | dropped | 65 biased points; now AUC 1.000, uninformative |
+| Inn "unbiased" on the 65 | 0.902 | dropped | the 65's bright land sample; now AUC 1.000, uninformative |
 | Pielach → Inn waveform | 0.478 / 0.492 (65 points) | 0.567 / 0.430 (regions) | test set; conclusion unchanged |
 | Inn → Pielach waveform | 0.647 / 0.685 | 0.702 / 0.725 | trained and scored on pipeline labels then; "chance" becomes "weak" |
 | dropping four features | 0.419–0.467, 0.611–0.689 | 0.454 / 0.442, 0.711 / 0.627 | same; conclusion unchanged |
