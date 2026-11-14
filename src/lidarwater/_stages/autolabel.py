@@ -17,7 +17,7 @@ from sklearn.metrics import f1_score
 
 from .._models._torch_optional import require_torch
 from ..artifacts import ArtifactId, ArtifactResolver
-from ..config import BOOTSTRAP_SURFACE, BootstrapConfig, ZoneConfig
+from ..config import BOOTSTRAP_SHEET, BOOTSTRAP_SURFACE, BootstrapConfig, ZoneConfig
 from ..types import PipelineState
 
 WAVEFORM_FEATURES = [
@@ -59,11 +59,8 @@ def create_surface_labels(features: pd.DataFrame, config: BootstrapConfig) -> np
 
 def _cell_surfaces(features: pd.DataFrame, config: BootstrapConfig):
     """Per-cell top elevation and the median reflectance of that top layer."""
-    x, y, z = (features[c].to_numpy() for c in "xyz")
-    ix = ((x - x.min()) / config.cell_m).astype(int)
-    iy = ((y - y.min()) / config.cell_m).astype(int)
-    shape = (ix.max() + 1, iy.max() + 1)
-    cell_of_point = ix * shape[1] + iy
+    z = features["z"].to_numpy()
+    cell_of_point, shape = _cell_index(features, config.cell_m)
     n_cells = shape[0] * shape[1]
 
     frame = pd.DataFrame({"cell": cell_of_point, "z": z,
@@ -71,16 +68,91 @@ def _cell_surfaces(features: pd.DataFrame, config: BootstrapConfig):
     counts = frame.groupby("cell").z.size()
     tops = frame.groupby("cell").z.quantile(config.top_percentile)
 
-    top = np.full(n_cells, np.nan)
-    enough = counts.index[counts >= config.min_points_per_cell]
-    top[enough] = tops.loc[enough].to_numpy()
+    top = _per_cell(tops[counts >= config.min_points_per_cell], n_cells)
 
     at_surface = (top[cell_of_point] - z) < config.surface_layer_m
     surface_reflectance = frame[at_surface].groupby("cell").reflectance.median()
-    reflectance = np.full(n_cells, np.nan)
-    reflectance[surface_reflectance.index] = surface_reflectance.to_numpy()
+    reflectance = _per_cell(surface_reflectance, n_cells)
     reflectance[np.isnan(top)] = np.nan
     return top.reshape(shape), reflectance, cell_of_point
+
+
+def create_sheet_labels(features: pd.DataFrame, config: BootstrapConfig) -> np.ndarray:
+    """1=water, 0=land, -1=excluded — relative to each cell's highest dense layer.
+
+    The top of a cell is canopy wherever trees stand, and canopy is as dark
+    as water. Crowns spread their returns over metres while water and ground
+    stack theirs into one thin layer, so the highest *dense* layer is the
+    surface a cell would show without its trees.
+    """
+    sheet, reflectance, cell_of_point = _cell_sheets(features, config)
+    populated = np.isfinite(reflectance)
+    coherent = populated & (_sheet_coherence(sheet, config) < config.coherence_max_m)
+    if coherent.sum() < 2:
+        raise ValueError("sheet bootstrap found no coherent sheet — is the cloud rasterisable?")
+    water_cell = coherent & (reflectance < _otsu(reflectance[coherent]))
+
+    above_sheet = features["z"].to_numpy() - sheet.ravel()[cell_of_point]
+    in_water_cell = water_cell[cell_of_point]
+    in_other_cell = (populated & ~water_cell)[cell_of_point]
+    label = np.full(len(features), -1, dtype=np.int8)
+    # A crown over the river is land; the sheet's own tolerance is how far a
+    # surface return may sit above the layer and still belong to it.
+    label[in_water_cell] = above_sheet[in_water_cell] <= config.coherence_max_m
+    # Returns from beneath a surface cannot be dry ground: under a bright or
+    # broken sheet they may be bed or water under trees, so they stay unlabelled.
+    label[in_other_cell & (above_sheet > -config.surface_layer_m)] = 0
+    return label
+
+
+def _per_cell(values: pd.Series, n_cells: int) -> np.ndarray:
+    """A series indexed by flat cell, laid out over the raster; NaN where absent."""
+    out = np.full(n_cells, np.nan)
+    out[values.index] = values.to_numpy()
+    return out
+
+
+def _cell_index(features: pd.DataFrame, cell_m: float) -> tuple[np.ndarray, tuple[int, int]]:
+    """Flat raster cell of every point, and the raster's shape."""
+    ix = ((features["x"].to_numpy() - features["x"].min()) / cell_m).astype(int)
+    iy = ((features["y"].to_numpy() - features["y"].min()) / cell_m).astype(int)
+    shape = (int(ix.max()) + 1, int(iy.max()) + 1)
+    return ix * shape[1] + iy, shape
+
+
+def _cell_sheets(features: pd.DataFrame, config: BootstrapConfig):
+    """Per-cell surface with the sparse overhang removed, and the median
+    reflectance of that surface layer."""
+    z = features["z"].to_numpy()
+    cell_of_point, shape = _cell_index(features, config.cell_m)
+    ceiling = _dense_layer_ceiling(z, cell_of_point, shape[0] * shape[1], config)
+
+    # From here on this is the "surface" bootstrap, blind to whatever stands
+    # above the highest dense layer.
+    under = z <= ceiling[cell_of_point]
+    frame = pd.DataFrame({"cell": cell_of_point, "z": z,
+                          "reflectance": features["reflectance_dB"].to_numpy()})[under]
+    tops = frame.groupby("cell").z.quantile(config.top_percentile)
+    sheet = _per_cell(tops, ceiling.size)
+
+    in_layer = (sheet[frame.cell] - frame.z) < config.surface_layer_m
+    layer_reflectance = frame[in_layer].groupby("cell").reflectance.median()
+    return (sheet.reshape(shape), _per_cell(layer_reflectance, ceiling.size),
+            cell_of_point)
+
+
+def _dense_layer_ceiling(z: np.ndarray, cell_of_point: np.ndarray, n_cells: int,
+                         config: BootstrapConfig) -> np.ndarray:
+    """Per-cell top edge of the highest elevation bin that is dense: one
+    holding at least ``dense_layer_ratio`` of the cell's fullest bin."""
+    z_bin = np.floor((z - z.min()) / config.sheet_bin_m).astype(int)
+    bins = (pd.DataFrame({"cell": cell_of_point, "z_bin": z_bin})
+            .groupby(["cell", "z_bin"]).size().rename("n").reset_index())
+    per_cell = bins.groupby("cell").n
+    dense = ((bins.n >= config.dense_layer_ratio * per_cell.transform("max"))
+             & (per_cell.transform("sum") >= config.min_points_per_cell))
+    highest = bins[dense].groupby("cell").z_bin.max()
+    return _per_cell(z.min() + (highest + 1) * config.sheet_bin_m, n_cells)
 
 
 def _sheet_coherence(top: np.ndarray, config: BootstrapConfig) -> np.ndarray:
@@ -118,6 +190,8 @@ def bootstrap(features: pd.DataFrame, zones: ZoneConfig,
     """Initial water/land labels, by whichever method the config selects."""
     if config.method == BOOTSTRAP_SURFACE:
         return create_surface_labels(features, config)
+    if config.method == BOOTSTRAP_SHEET:
+        return create_sheet_labels(features, config)
     return create_labels(features["z"].to_numpy(), zones)
 
 

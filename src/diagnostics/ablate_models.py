@@ -61,6 +61,7 @@ from lidarwater import PipelineConfig, WaterPipeline, derive_site_config  # noqa
 from lidarwater import pipeline as pipeline_module                      # noqa: E402
 from lidarwater._stages import autolabel, surface, wcn                  # noqa: E402
 from lidarwater.artifacts import LocalArtifactResolver                  # noqa: E402
+from lidarwater.config import BOOTSTRAP_SHEET, BOOTSTRAP_SURFACE        # noqa: E402
 from lidarwater.site import Z_HISTOGRAM_BIN_M, estimate_water_level     # noqa: E402
 from lidarwater.types import PipelineState, PointCloud                  # noqa: E402
 
@@ -71,6 +72,11 @@ OUT_DIR = ROOT / "runs" / "ablation"
 # reflectance added). Pielach is also fitted the second way, because the
 # z-bands were verified by eye and so are not strictly label-free.
 SHIPPED, DERIVED = "shipped", "derived"
+# derive_site_config with the canopy-robust sheet bootstrap, fitted by
+# diagnose_bootstrap.py, not here. Both names pin their bootstrap, so each
+# stays reproducible whichever one derive_site_config selects.
+UNIFIED = "unified"
+DERIVED_BOOTSTRAP = {DERIVED: BOOTSTRAP_SURFACE, UNIFIED: BOOTSTRAP_SHEET}
 # Not a fit: the weights in models/ that every published Pielach figure came
 # from, run through classify(). A yardstick for the from-scratch fits. Its v6
 # checkpoint predates the library's layer names and cannot be loaded, so the
@@ -102,8 +108,15 @@ class FitSpec:
 
     @property
     def cache_dir(self) -> Path:
-        features = DERIVED if self.config == DERIVED else SHIPPED
+        # the derived and unified configs extract identical features
+        features = DERIVED if self.config in DERIVED_BOOTSTRAP else SHIPPED
         return OUT_DIR / "cache" / f"{self.site}_{features}"
+
+
+def parse_spec(name: str) -> FitSpec:
+    """Inverse of FitSpec.name, so a worker can run a fit FITS does not list."""
+    site, config, seed, rep = name.split("_")
+    return FitSpec(site, config, int(seed.removeprefix("seed")), int(rep.removeprefix("rep")))
 
 
 FITS = (
@@ -158,7 +171,11 @@ REPORT_DIGITS = 4
 # --------------------------------------------------------------------------
 
 def build_config(spec: FitSpec, cloud: PointCloud) -> PipelineConfig:
-    base = derive_site_config(cloud)[0] if spec.config == DERIVED else PipelineConfig()
+    base = PipelineConfig()
+    if spec.config in DERIVED_BOOTSTRAP:
+        base = derive_site_config(cloud)[0]
+        base = dataclasses.replace(base, bootstrap=dataclasses.replace(
+            base.bootstrap, method=DERIVED_BOOTSTRAP[spec.config]))
     if (base.surface.resolve_uncertain or base.cleanup.majority_filter
             or base.cleanup.surface_prior):
         raise ValueError("the ablation scores the base configuration: all flags off")
@@ -310,12 +327,13 @@ def run_worker(spec: FitSpec, refit: bool) -> None:
                         **build_arms(state, config, cloud))
 
 
-def run_workers(refit: bool, rearm: bool, max_parallel: int) -> None:
+def run_workers(fits: tuple[FitSpec, ...], refit: bool, rearm: bool,
+                max_parallel: int) -> None:
     """One subprocess per fit, so none inherits another's torch state. A fit
     whose arms are already on disk is skipped unless asked for again; one
     failure does not stop the others, but it does stop the scoring."""
-    todo = [s for s in FITS if refit or rearm or not (s.dir / "arms.npz").exists()]
-    for spec in FITS:
+    todo = [s for s in fits if refit or rearm or not (s.dir / "arms.npz").exists()]
+    for spec in fits:
         print(f"  {'run ' if spec in todo else 'keep'} {spec.name}", flush=True)
 
     def launch(spec: FitSpec) -> bool:
@@ -507,10 +525,9 @@ def main() -> int:
     args = parser.parse_args()
 
     if args.worker:
-        (spec,) = [s for s in FITS if s.name == args.worker]
-        run_worker(spec, args.refit)
+        run_worker(parse_spec(args.worker), args.refit)
         return 0
-    run_workers(args.refit, args.rearm, args.max_parallel)
+    run_workers(FITS, args.refit, args.rearm, args.max_parallel)
     fits = {spec: dict(np.load(spec.dir / "arms.npz")) for spec in FITS}
     scores = score_all(fits)
     write_report({"arms": score_rows(scores), "contrasts": arm_contrasts(scores),

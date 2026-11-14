@@ -31,7 +31,7 @@ from ._stages.features import (
     _waveform_to_grid,
 )
 from .config import (
-    BOOTSTRAP_SURFACE,
+    BOOTSTRAP_SHEET,
     GRID_ORIGIN_FIRST_RETURN,
     GRID_ORIGIN_FIRST_SAMPLE,
     REFLECTANCE_FEATURE,
@@ -263,8 +263,9 @@ def derive_site_config(cloud: PointCloud, base: PipelineConfig | None = None,
     # its dB scale is survey-specific. A model fitted for one site is only used
     # there, so the objection does not apply and the signal is worth having.
     # The z-band bootstrap encodes one survey's elevations; on any other site
-    # it teaches the model an elevation rule that happens to be wrong.
-    config = _replace_nested(config, "bootstrap", method=BOOTSTRAP_SURFACE)
+    # it teaches the model an elevation rule that happens to be wrong. The
+    # sheet method, unlike the top-surface one, also survives tree cover.
+    config = _replace_nested(config, "bootstrap", method=BOOTSTRAP_SHEET)
     scalar_features = (*WCN_SCALAR_FEATURES, REFLECTANCE_FEATURE)
     config = _replace_nested(
         config, "wcn",

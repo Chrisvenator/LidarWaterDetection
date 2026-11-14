@@ -449,6 +449,65 @@ def test_surface_bootstrap_separates_water_from_land_at_equal_height():
     assert land_recall > 0.9, f"land recall {land_recall:.1%}"
 
 
+def _under_canopy(cloud: PointCloud, is_land: np.ndarray, crown_share: float = 0.5):
+    """The same scene with tree crowns over all of it: half the returns are
+    lifted 3-12 m and made as dark as water, as Pielach's canopy is."""
+    rng = np.random.default_rng(2)
+    xyz = cloud.xyz.copy()
+    reflectance = cloud.reflectance_db.copy()
+    is_crown = rng.random(len(cloud)) < crown_share
+    xyz[is_crown, 2] += rng.uniform(3.0, 12.0, is_crown.sum())
+    reflectance[is_crown] = -5.0 + rng.normal(0, 0.5, is_crown.sum())
+    feats = pd.DataFrame({"x": xyz[:, 0], "y": xyz[:, 1], "z": xyz[:, 2],
+                          "reflectance_dB": reflectance})
+    return feats, is_crown
+
+
+def test_sheet_bootstrap_separates_water_from_land_at_equal_height():
+    from lidarwater._stages.autolabel import create_sheet_labels
+    from lidarwater.config import BOOTSTRAP_SHEET, BootstrapConfig
+
+    cloud, is_land = _sheet_cloud()
+    feats = pd.DataFrame({"x": cloud.x, "y": cloud.y, "z": cloud.z,
+                          "reflectance_dB": cloud.reflectance_db})
+    labels = create_sheet_labels(feats, BootstrapConfig(method=BOOTSTRAP_SHEET))
+
+    assert (labels[~is_land] == 1).mean() > 0.9
+    assert (labels[is_land] == 0).mean() > 0.9
+
+
+def test_sheet_bootstrap_sees_the_water_under_tree_crowns():
+    """What the surface bootstrap cannot do: with crowns overhead a cell's
+    top is canopy, and dark canopy is indistinguishable from water."""
+    from lidarwater._stages.autolabel import create_sheet_labels, create_surface_labels
+    from lidarwater.config import BOOTSTRAP_SHEET, BOOTSTRAP_SURFACE, BootstrapConfig
+
+    cloud, is_land = _sheet_cloud(n=12000)
+    feats, is_crown = _under_canopy(cloud, is_land)
+    water = ~is_land & ~is_crown
+    sheet = create_sheet_labels(feats, BootstrapConfig(method=BOOTSTRAP_SHEET))
+    top = create_surface_labels(feats, BootstrapConfig(method=BOOTSTRAP_SURFACE))
+
+    assert (sheet[water] == 1).mean() > 0.9, "water under crowns must be found"
+    assert (sheet[is_crown] == 1).mean() < 0.01, "a crown is never water"
+    assert (sheet[is_land & ~is_crown] == 1).mean() < 0.05
+    assert (top[water] == 1).mean() < 0.5, "the top-surface bootstrap loses that water"
+
+
+def test_sheet_bootstrap_leaves_returns_beneath_a_land_surface_unlabelled():
+    from lidarwater._stages.autolabel import create_sheet_labels
+    from lidarwater.config import BOOTSTRAP_SHEET, BootstrapConfig
+
+    cloud, is_land = _sheet_cloud()
+    feats = pd.DataFrame({"x": cloud.x, "y": cloud.y, "z": cloud.z,
+                          "reflectance_dB": cloud.reflectance_db})
+    buried = is_land & (np.arange(len(feats)) % 10 == 0)
+    feats.loc[buried, "z"] -= 1.0
+    labels = create_sheet_labels(feats, BootstrapConfig(method=BOOTSTRAP_SHEET))
+
+    assert (labels[buried] == -1).mean() > 0.9
+
+
 def test_zone_bootstrap_cannot_separate_them_at_equal_height():
     """The contrast the surface method exists for: with water and land at the
     same elevation, an elevation rule has no information at all."""
@@ -464,12 +523,12 @@ def test_zone_bootstrap_cannot_separate_them_at_equal_height():
 
 
 def test_derived_config_selects_the_elevation_free_bootstrap(synthetic_river):
-    from lidarwater.config import BOOTSTRAP_SURFACE, BOOTSTRAP_ZONES
+    from lidarwater.config import BOOTSTRAP_SHEET, BOOTSTRAP_ZONES
 
     cloud, _, _ = synthetic_river
     assert PipelineConfig().bootstrap.method == BOOTSTRAP_ZONES     # Pielach default
     config, _ = derive_site_config(cloud)
-    assert config.bootstrap.method == BOOTSTRAP_SURFACE
+    assert config.bootstrap.method == BOOTSTRAP_SHEET
 
 
 def test_bootstrap_config_rejects_an_unknown_method():
