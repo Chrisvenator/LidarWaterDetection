@@ -32,8 +32,12 @@ import json
 import sys
 from pathlib import Path
 
+import matplotlib
 import numpy as np
 import pandas as pd
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt                                         # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT / "src"))
@@ -64,6 +68,9 @@ BAND_WATER, BAND_MIDDLE, BAND_CANOPY = "water band", "transition", "canopy band"
 # water tolerance of the site's modal water level.
 AT_LEVEL_M = ab.PipelineConfig().surface.water_tol_m
 LAYER_AT, LAYER_LOW, LAYER_HIGH = "at water level", "above it, under 3 m", "3 m or more above"
+MAP_FIGSIZE = (26, 10)
+MAP_HEIGHT_RANGE_M = 3.0
+MAP_DPI = 80
 REFLECTANCE_QUANTILES = (0.1, 0.5, 0.9)
 HEIGHT_QUANTILES = (0.5, 0.95, 0.99)
 
@@ -134,6 +141,41 @@ def layer_rows(site: str, method: str, table: pd.DataFrame) -> list[dict]:
             "coherent_bright": int((cells.coherent & ~cells.dark).sum()),
         })
     return rows
+
+
+def cell_classes(features: pd.DataFrame, method: str) -> tuple[np.ndarray, np.ndarray]:
+    """Rasters of surface height above the water level, and of what the
+    bootstrap makes of each cell: 0 not a coherent sheet, 1 bright sheet,
+    2 dark sheet (water)."""
+    config = bootstrap_config(method)
+    cells = autolabel._cell_sheets if method == BOOTSTRAP_SHEET else autolabel._cell_surfaces
+    surface, reflectance, _ = cells(features, config)
+    reflectance = reflectance.reshape(surface.shape)
+    coherent = (np.isfinite(reflectance)
+                & (autolabel._sheet_coherence(surface, config).reshape(surface.shape)
+                   < config.coherence_max_m))
+    dark = reflectance < autolabel._otsu(reflectance[coherent])
+    classes = np.where(np.isfinite(reflectance), coherent * (1 + dark), np.nan)
+    return surface - estimate_water_level(features["z"].to_numpy()), classes
+
+
+def plot_cell_maps(features: dict[str, pd.DataFrame]) -> Path:
+    fig, axes = plt.subplots(len(SITES), 2 * len(METHODS), figsize=MAP_FIGSIZE)
+    for row, site in zip(axes, SITES):
+        for pair, method in zip(row.reshape(len(METHODS), 2), METHODS):
+            height, classes = cell_classes(features[site], method)
+            shown = pair[0].imshow(height.T, origin="lower", cmap="coolwarm",
+                                   vmin=-MAP_HEIGHT_RANGE_M, vmax=MAP_HEIGHT_RANGE_M)
+            fig.colorbar(shown, ax=pair[0], shrink=0.6)
+            pair[0].set_title(f"{site}, {method}: cell surface above water level [m]")
+            pair[1].imshow(classes.T, origin="lower", cmap="viridis", vmin=0, vmax=2)
+            pair[1].set_title("purple: no sheet, green: bright sheet, yellow: dark sheet = water")
+    fig.tight_layout()
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    path = OUT_DIR / "cell_maps.png"
+    fig.savefig(path, dpi=MAP_DPI)
+    plt.close(fig)
+    return path
 
 
 def pielach_band(z: np.ndarray) -> np.ndarray:
@@ -332,6 +374,7 @@ def main() -> int:
     features = {site: load_features(site) for site in SITES}
     reference = inn_regions(features[mt.INN])
     write("diagnosis", print_diagnosis, diagnosis(features, reference))
+    print(f"wrote {plot_cell_maps(features)}")
     if args.fit or args.score:
         write("fit_signals", print_fit_signals,
               fit_signals(args.max_parallel, features, reference))
