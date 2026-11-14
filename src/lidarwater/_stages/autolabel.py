@@ -59,11 +59,8 @@ def create_surface_labels(features: pd.DataFrame, config: BootstrapConfig) -> np
 
 def _cell_surfaces(features: pd.DataFrame, config: BootstrapConfig):
     """Per-cell top elevation and the median reflectance of that top layer."""
-    x, y, z = (features[c].to_numpy() for c in "xyz")
-    ix = ((x - x.min()) / config.cell_m).astype(int)
-    iy = ((y - y.min()) / config.cell_m).astype(int)
-    shape = (ix.max() + 1, iy.max() + 1)
-    cell_of_point = ix * shape[1] + iy
+    z = features["z"].to_numpy()
+    cell_of_point, shape = _cell_index(features, config.cell_m)
     n_cells = shape[0] * shape[1]
 
     frame = pd.DataFrame({"cell": cell_of_point, "z": z,
@@ -71,14 +68,11 @@ def _cell_surfaces(features: pd.DataFrame, config: BootstrapConfig):
     counts = frame.groupby("cell").z.size()
     tops = frame.groupby("cell").z.quantile(config.top_percentile)
 
-    top = np.full(n_cells, np.nan)
-    enough = counts.index[counts >= config.min_points_per_cell]
-    top[enough] = tops.loc[enough].to_numpy()
+    top = _per_cell(tops[counts >= config.min_points_per_cell], n_cells)
 
     at_surface = (top[cell_of_point] - z) < config.surface_layer_m
     surface_reflectance = frame[at_surface].groupby("cell").reflectance.median()
-    reflectance = np.full(n_cells, np.nan)
-    reflectance[surface_reflectance.index] = surface_reflectance.to_numpy()
+    reflectance = _per_cell(surface_reflectance, n_cells)
     reflectance[np.isnan(top)] = np.nan
     return top.reshape(shape), reflectance, cell_of_point
 
@@ -111,6 +105,13 @@ def create_sheet_labels(features: pd.DataFrame, config: BootstrapConfig) -> np.n
     return label
 
 
+def _per_cell(values: pd.Series, n_cells: int) -> np.ndarray:
+    """A series indexed by flat cell, laid out over the raster; NaN where absent."""
+    out = np.full(n_cells, np.nan)
+    out[values.index] = values.to_numpy()
+    return out
+
+
 def _cell_index(features: pd.DataFrame, cell_m: float) -> tuple[np.ndarray, tuple[int, int]]:
     """Flat raster cell of every point, and the raster's shape."""
     ix = ((features["x"].to_numpy() - features["x"].min()) / cell_m).astype(int)
@@ -132,14 +133,12 @@ def _cell_sheets(features: pd.DataFrame, config: BootstrapConfig):
     frame = pd.DataFrame({"cell": cell_of_point, "z": z,
                           "reflectance": features["reflectance_dB"].to_numpy()})[under]
     tops = frame.groupby("cell").z.quantile(config.top_percentile)
-    sheet = np.full(ceiling.size, np.nan)
-    sheet[tops.index] = tops.to_numpy()
+    sheet = _per_cell(tops, ceiling.size)
 
     in_layer = (sheet[frame.cell] - frame.z) < config.surface_layer_m
     layer_reflectance = frame[in_layer].groupby("cell").reflectance.median()
-    reflectance = np.full(ceiling.size, np.nan)
-    reflectance[layer_reflectance.index] = layer_reflectance.to_numpy()
-    return sheet.reshape(shape), reflectance, cell_of_point
+    return (sheet.reshape(shape), _per_cell(layer_reflectance, ceiling.size),
+            cell_of_point)
 
 
 def _dense_layer_ceiling(z: np.ndarray, cell_of_point: np.ndarray, n_cells: int,
@@ -153,9 +152,7 @@ def _dense_layer_ceiling(z: np.ndarray, cell_of_point: np.ndarray, n_cells: int,
     dense = ((bins.n >= config.dense_layer_ratio * per_cell.transform("max"))
              & (per_cell.transform("sum") >= config.min_points_per_cell))
     highest = bins[dense].groupby("cell").z_bin.max()
-    ceiling = np.full(n_cells, np.nan)
-    ceiling[highest.index] = z.min() + (highest.to_numpy() + 1) * config.sheet_bin_m
-    return ceiling
+    return _per_cell(z.min() + (highest + 1) * config.sheet_bin_m, n_cells)
 
 
 def _sheet_coherence(top: np.ndarray, config: BootstrapConfig) -> np.ndarray:

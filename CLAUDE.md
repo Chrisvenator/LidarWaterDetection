@@ -166,10 +166,17 @@ whether the site has canopy at all. Architecture, hyperparameters and
 dimensionless ratios are untouched. `pytest -m golden` still passes because it
 runs `PipelineConfig()`, not the derived config. On the Pielach cloud the
 derivation is **not** a no-op (measured 2026-11-12): thresholds move by only
-2 mm / 0.001 dB, but it also selects the surface bootstrap, appends
-`reflectance_dB` and sets `fallback_tol_m` 0.3 -> 1.0, and a Pielach fit with
-it fails (F1 0.415 [0.28, 0.59] against 0.86-0.88 with `PipelineConfig()`;
-`context/paper_context.md` §13). Fit Pielach with `PipelineConfig()` only.
+2 mm / 0.001 dB, but it also selects the elevation-free bootstrap, appends
+`reflectance_dB` and sets `fallback_tol_m` 0.3 -> 1.0. Since 2026-11-14 the
+bootstrap it selects is `method="sheet"`, and a from-scratch Pielach fit with
+it scores F1 0.903 [0.82, 0.95] / 0.906 [0.83, 0.95] (seeds 42 / 43) on the
+Mandlburger matches against 0.862 / 0.880 with `PipelineConfig()` — scored
+once, after the design was frozen in commit 8c06eb3
+(`context/paper_context.md` §14). With the older `method="surface"` the same
+fit failed (F1 0.415 [0.28, 0.59], §13). The elevation rule `z < level +
+0.05 m` still scores 0.928 [0.87, 0.97] there; the derived pipeline is not
+shown to beat it (-0.025 [-0.074, 0.008]). The canopy stage still
+bootstraps from z-bands under either config.
 
 Outputs go to `runs/<dataset>/` (`Workspace`), never into the repo-level
 `models/`, `pointclouds/`, `data_processed/` trees, which belong to Pielach.
@@ -235,8 +242,29 @@ Outputs go to `runs/<dataset>/` (`Workspace`), never into the repo-level
   also holds on the hand-drawn regions (96.2% [94.8, 97.6]) where a bare
   reflectance cut collapses to 70.5%, so isolating the surface layer is doing
   real work.
-  Stable across 2-4 m cells. Selected by `derive_site_config`; the z-bands
-  remain the default so Pielach is untouched.
+  Stable across 2-4 m cells. The z-bands remain the default so
+  `PipelineConfig()` and the golden test are untouched.
+  **`"surface"` fails under trees; `derive_site_config` selects
+  `method="sheet"` instead** (2026-11-14, `python
+  src/diagnostics/diagnose_bootstrap.py`, `context/paper_context.md` §14).
+  On Pielach 49.5% of cells have their top >= 3 m above the water level and
+  only 26.7% have it at the level, and canopy is as dark as water (point
+  reflectance p50 -23.1 dB against -24.6 dB), so the top-surface split marks
+  crowns as water and labels 15% of the eye-checked water band water (F1
+  0.290 on its own). `"sheet"` replaces each cell's top with the top of its
+  highest *dense* 0.1 m z-bin (one holding >= `dense_layer_ratio` = 0.5 of the
+  cell's fullest bin: crowns spread over metres, water and ground stack), and
+  labels relative to that sheet rather than the whole column: at or below a
+  dark coherent sheet is water, above it land; in other cells the sheet and
+  what stands on it are land and returns beneath it stay unlabelled.
+  Bootstrap alone: Pielach F1 0.755 [0.60, 0.85] (z-bands 0.634, surface
+  0.290); Inn regions balanced accuracy 0.976 (surface 0.962). Inn full
+  pipeline unchanged (F1 0.9943 / 0.9948 against 0.9943 / 0.9947). Known
+  weak points: `dense_layer_ratio` has little headroom upward (0.7 gives
+  0.936 on Inn, <= 0.4 lets canopy into Pielach's water), and ~3% of
+  Pielach's bootstrap water labels sit > 0.3 m above the level (dark flat
+  terrace cells) until geometry removes them. `CleanupConfig.surface_prior`
+  still reads the top-surface labels.
   Note flatness alone is *not* enough: a gravel bar is a flat coherent sheet
   too (cell-wise flatness gives 100% water recall but ~40% on land), and
   per-point planarity is actively misleading here (water 0.61, land 0.73 —

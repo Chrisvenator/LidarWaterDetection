@@ -330,6 +330,12 @@ within a cell is used. Against hand-labelled points on Inn:
 | `"zones"` (elevation bands) | 27.6% | 80.6% | 54.1% |
 | `"surface"` | 100% | 94.4% | **97.2%** |
 
+`"surface"` assumes the top of a cell is the surface, which is false under
+trees: on Pielach half the cells top out in canopy, and canopy is as dark as
+water. `BootstrapConfig(method="sheet")` — what `derive_site_config` selects —
+uses each cell's highest *dense* elevation layer instead of its top, and
+labels points relative to that sheet (see `context/paper_context.md` §14).
+
 Two things make it work, and both are easy to get wrong. Isolating the
 surface layer is what makes the reflectance histogram bimodal: over *all*
 points the deepest Otsu valley falls inside the water mode (-7.10 dB, 61.0%),

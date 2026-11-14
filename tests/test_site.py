@@ -523,12 +523,12 @@ def test_zone_bootstrap_cannot_separate_them_at_equal_height():
 
 
 def test_derived_config_selects_the_elevation_free_bootstrap(synthetic_river):
-    from lidarwater.config import BOOTSTRAP_SURFACE, BOOTSTRAP_ZONES
+    from lidarwater.config import BOOTSTRAP_SHEET, BOOTSTRAP_ZONES
 
     cloud, _, _ = synthetic_river
     assert PipelineConfig().bootstrap.method == BOOTSTRAP_ZONES     # Pielach default
     config, _ = derive_site_config(cloud)
-    assert config.bootstrap.method == BOOTSTRAP_SURFACE
+    assert config.bootstrap.method == BOOTSTRAP_SHEET
 
 
 def test_bootstrap_config_rejects_an_unknown_method():
