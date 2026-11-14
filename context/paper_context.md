@@ -696,3 +696,153 @@ B, what the two sites support is: a bootstrap rule plus a small learned model
 per-point labels, and which bootstrap works is site-specific. B's "F1 0.911"
 needs the elevation rule's 0.928 next to it. For C, finding 1 is direct
 support on Pielach: the model does not beat the elevation rule it was taught.
+
+---
+
+## 14. Unified bootstrap (2026-11-14)
+
+Source for every number: `python src/diagnostics/diagnose_bootstrap.py`
+(diagnosis, development signals, sweeps, `cell_maps.png`), `--fit` (four
+fits, placement signals, Inn regions) and `--score` (Mandlburger, paired
+contrasts). Outputs: `runs/unified_bootstrap/{diagnosis,fit_signals,evaluation}.{txt,json}`.
+Scoring as in §11–13: abstention is a miss, 95% intervals from 2,000
+resamples of 10 m blocks, differences paired on the same draws, all three
+optional flags off. Branch `unified-bootstrap`.
+
+### Diagnosis: why `method="surface"` collapses on Pielach
+
+The canopy hypothesis holds, and there is a second cause on top of it.
+
+- *The top of a cell is not the surface.* Of Pielach's 319 populated 3 m
+  cells, 158 (49.5%) have their top surface ≥ 3 m above the water level
+  (260.29 m), 76 (23.8%) in between, and only 85 (26.7%) at the level. Only
+  82 cells are coherent, 29 of them at the level. On Inn 79% of tops are at
+  the water level and 1,531 cells are coherent.
+- *Canopy is as dark as water.* Point reflectance p10/50/90 by eye-checked
+  band: canopy −27.1/−23.1/−17.4 dB, transition −26.5/−18.2/−11.8, water
+  band −29.4/−24.6/−17.2. Otsu lands at −16.93 dB and the dark coherent
+  cells are 8 canopy, 2 intermediate, 17 at the level. Reflectance cannot
+  tell a crown from the river; only the vertical structure can.
+- *The whole column gets the cell's label.* A crown over water makes its
+  riverbed "water" only if the crown is dark and coherent; water under a
+  bright or rough crown becomes land.
+- Result: water share 7.0%; 15.2% of the eye-checked water band labelled
+  water; 3.6% of the canopy band labelled water; 47.9% of water labels more
+  than 0.3 m above the water level (p99 +12.5 m).
+
+Cues tried and rejected: fraction of returns below the sheet (absent on much
+of Inn's water, present on vegetated land); Kittler minimum-error threshold
+in place of Otsu (−15.4 … −19.4 dB across cell sizes); the cloud-wide z-mode
+as the layer (falls to the riverbed on Inn, recall 0.67).
+
+### Design: `BootstrapConfig(method="sheet")`
+
+Same idea as `"surface"` — coherent sheet, split by the reflectance of the
+surface layer — with two changes, both forced by the diagnosis:
+
+1. *Highest dense layer instead of top.* Per cell, histogram z in 0.10 m
+   bins (`sheet_bin_m`, the bin the site profile already uses for the water
+   level); the ceiling is the top edge of the highest bin holding at least
+   `dense_layer_ratio` = 0.5 of the cell's fullest bin. The sheet is the 97th
+   percentile of points at or below the ceiling. Crowns spread their returns
+   over metres; water and ground stack theirs into one bin.
+2. *Labels relative to the sheet, not per column.* In a dark coherent cell:
+   z ≤ sheet + `coherence_max_m` is water, above is land (a crown over the
+   river). In any other populated cell: the sheet layer and everything above
+   it is land; returns beneath it stay unlabelled, because under a bright or
+   broken sheet they may be bed, or water under trees.
+
+No elevation band and no hand-checked threshold enters. Every other
+parameter keeps its `"surface"` value (cell 3 m, top percentile 0.97,
+surface layer 0.15 m, coherence 0.15 m over a 7-cell median filter, ≥ 5
+points per cell). **Frozen in commit `8c06eb3` before any Mandlburger
+scoring**; the later refactor of `autolabel.py` gives bit-identical labels
+on both clouds. `derive_site_config` now selects it; `PipelineConfig()` and
+`pytest -m golden` are unchanged.
+
+### Development signals (no Mandlburger)
+
+Both sites were development sites: Pielach's eye-checked z-bands and Inn's
+hand-drawn regions steered the design, so nothing in this subsection is a
+test result. One secondary proxy also used during development and disclosed
+here: agreement of a cheap teacher run (v6 fit + first geometry pass) with
+the shipped z-band pipeline's water mask (0.980, IoU 0.898).
+
+| signal | surface | sheet |
+|---|---|---|
+| Pielach bootstrap: water band labelled water | 0.152 | 0.598 |
+| Pielach bootstrap: canopy band labelled water | 0.036 | 0.0004 |
+| Pielach bootstrap: water labels > level + 0.3 m | 47.9% | 3.0% |
+| Pielach full pipeline: water band called water | — | 0.909 / 0.913 (z-band config 0.848 / 0.867) |
+| Inn bootstrap, regions: balanced accuracy / F1 | 0.962 / 0.987 | 0.976 / 0.991 |
+
+Sensitivity on Inn regions (bootstrap balanced accuracy, one parameter at a
+time): `dense_layer_ratio` 0.3/0.4/**0.5**/0.6/0.7/1.0 → 0.970/0.975/0.976/
+0.967/0.936/0.819; cell 2/4 m → 0.959/0.970; coherence 0.10/0.25 m →
+0.980/0.961; filter 5/9 → 0.964/0.977; bin 0.05/0.20 m → 0.976/0.979. The
+ratio is the fragile one: ≤ 0.4 lets canopy into Pielach's water labels and
+≥ 0.7 loses Inn, so 0.5 sits in a window roughly 0.45–0.6 wide established
+on two sites only.
+
+### One-shot result on the Mandlburger matches (n = 26,645, 28 blocks)
+
+Scored once, after the freeze; nothing was changed afterwards. "Unified" is
+`derive_site_config` with the sheet bootstrap; "z-band" is `PipelineConfig()`
+(§13 "shipped"); both from scratch, same seeds.
+
+| Pielach | seed 42 | seed 43 |
+|---|---|---|
+| unified, full pipeline F1 | **0.903 [0.821, 0.946]** | **0.906 [0.825, 0.949]** |
+| z-band config, full pipeline F1 | 0.862 [0.774, 0.909] | 0.880 [0.791, 0.927] |
+| unified − z-band, paired | +0.041 [0.024, 0.059] | +0.027 [0.019, 0.040] |
+| elevation rule `z < level + 0.05 m` F1 | 0.928 [0.868, 0.968] | same |
+| unified − elevation rule, paired | −0.025 [−0.074, 0.008] | −0.021 [−0.071, 0.012] |
+| same, balanced accuracy | +0.025 [−0.046, 0.091] | +0.029 [−0.043, 0.094] |
+| unified, balanced accuracy | 0.879 [0.808, 0.934] | 0.882 |
+| unified water / land recall, abstained | 0.868 / 0.890, 4.3% | 0.874 / 0.890, 4.5% |
+
+Bootstrap labels alone (seed-independent): sheet F1 0.755 [0.604, 0.846],
+z-bands 0.634 [0.564, 0.676], surface 0.290 (§13); sheet − z-bands +0.121
+[0.016, 0.196]. Bootstrap → geometry: 0.808 against 0.731, +0.077 [−0.013,
+0.139]. Seed spread of the unified full pipeline: 0.0035 F1 (z-band config:
+0.018).
+
+### Inn before / after (regions, n = 180,394, 199 blocks)
+
+| Inn | surface (before) | sheet (after) | paired difference |
+|---|---|---|---|
+| bootstrap alone, balanced accuracy | 0.9619 | 0.9755 | +0.014 [−0.000, 0.029] |
+| bootstrap alone, F1 | 0.9869 | 0.9912 | +0.004 [−0.001, 0.010] |
+| bootstrap → geometry, F1 | 0.9935 | 0.9932 | −0.0004 [−0.002, 0.001] |
+| full pipeline F1, seed 42 | 0.9943 | 0.9943 | −0.0000 [−0.001, 0.001] |
+| full pipeline F1, seed 43 | 0.9947 | 0.9948 | +0.0001 [−0.0004, 0.0005] |
+
+Seed spread 0.0005. On the 65 picked points the full pipeline is identical
+(F1 0.964 both); the bootstrap alone goes 0.967 → 1.000. Bootstrap →
+geometry abstains more with the sheet labels (12.5% against 1.9%) because
+sub-sheet returns are unlabelled; the trained models remove that (1.1%).
+
+### Verdict: works on both sites, with limits
+
+One configuration, per-site values only from `derive_site_config`, now fits
+both sites: Pielach above the z-band configuration under both seeds with
+intervals clear of zero and of the seed spread, Inn unchanged to within its
+noise floor. What this does **not** show:
+
+- *It does not beat elevation on Pielach.* The point estimate is 0.02 F1
+  below `z < level + 0.05 m`; the interval includes zero, and on balanced
+  accuracy the sign reverses. With 28 blocks the two are not separable.
+  The claim is "matches an elevation rule without being given one", no more.
+- *The gain over the z-band config is not the bootstrap alone.* The derived
+  config also adds `reflectance_dB` to the WCN scalars and widens
+  `fallback_tol_m` to 1.0. The bootstrap-only contrast (+0.121) isolates the
+  labels; the full-pipeline +0.03–0.04 is the configuration as a whole.
+- *Two sites, both used for design.* The Mandlburger number is the only
+  figure here not seen during development, and it was taken once.
+- *Residual label noise.* About 3% of Pielach's bootstrap water labels sit
+  more than 0.3 m above the level (p99 +2.8 m, some six dark coherent
+  terrace cells); geometry reduces it to 0.7%.
+- *Not elevation-free end to end.* The canopy stage still bootstraps from
+  z-bands (shifted by the derivation), and `CleanupConfig.surface_prior`
+  still reads top-surface labels; neither was touched or re-measured with
+  flags on.
