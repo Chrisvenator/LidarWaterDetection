@@ -82,13 +82,16 @@ Strength column: **hard** = measured against human/independent labels,
 | The four features die or reverse across the two surveys | water−land shift, cloud sd: `max_amp_norm_by_energy` −0.80 [−1.21, −0.33] → +0.05; `gap_ratio` −0.60 [−0.78, −0.43] → +0.17 [0.10, 0.23]; `n_gaps`/`n_clusters` −0.30 [−0.60, −0.11] → +0.07 [0.03, 0.11] | ibid. §4 | **hard, confirmed qualitatively.** Sign depends on class definition: vs pipeline labels Pielach `max_amp_norm_by_energy` is +0.58 |
 | …because they describe the export format, and that is why transfer fails | common echo-window re-export of both surveys: gap/cluster shifts vanish (Inn `n_gaps` mean 0.001; Pielach `gap_ratio` −0.60 → −0.13 [−0.42, 0.13]); scalar transfer unchanged (Pielach→Inn −0.033 [−0.057, −0.004]); raw grid recovers partly only after matching the time axis (+0.080 / +0.159, to 0.727 / 0.797) | ibid. §5 | **NOT SUPPORTED.** The features do reflect what the export keeps, but harmonising the export does not restore transfer. Larger measured difference: echo width 69 vs 3 samples, record ends 7 Pielach-equivalent samples after first return |
 | What survives is consistent but weak | `peak_amp_ratio` −0.32 [−0.42, −0.20] / −0.22 [−0.31, −0.14]; `energy_ratio_late` +0.99 / +0.20 (same sign). `energy_concentration` +0.09 [−0.17, 0.41] / +0.48 and `depth_proxy_m` −0.12 [−0.33, 0.06] / −0.20 are not significant on Pielach | ibid. §4 | **hard, weakened**: one feature agrees cleanly, not three |
-| Elevation leakage | 97.68% of Inn final output reproduced by `z < 380.44 m` | `CLAUDE.md`, failure mode 5 | **downgraded**: the z-band run is not on disk, so 97.68% is unverifiable. Context it needs: the *corrected* output is itself 89.0% (base) / 94.7% (all flags) reproduced by `z < 380.77`, and against the region labels that one rule scores 96.0% [92.6, 98.3] vs the pipeline's 97.1% [96.2, 97.9] — indistinguishable. Only the 65 separate them (77.8% [68.8, 87.1] vs 93.1% [86.0, 98.6]), and that gap is the 15 "probably-land" points on one gravel bar |
-| Elevation-free surface bootstrap fixes it | Otsu over all points −7.10 dB / 61.0% balanced; over surface layers −0.46 dB / 97.2% (100% water, 94.4% land); stable across 2–4 m cells | ibid. | **confirmed on the 65** (97.2%, block CI [93.0, 100], identical at 2/3/4 m). On the regions: 96.2% [94.8, 97.6] at 3 m, and *not* cell-stable (94.2% / 96.2% / 97.4% at 2/3/4 m). All-points Otsu figure not re-measured |
+| Elevation leakage | 97.68% of Inn final output reproduced by `z < 380.44 m` | `CLAUDE.md`, failure mode 5 | **downgraded**: the z-band run is not on disk, so 97.68% is unverifiable. Context it needs: the *corrected* output is itself 89.0% (base) / 94.7% (all flags) reproduced by `z < 380.77`, and against the region labels that one rule scores 96.0% [92.6, 98.3] vs the pipeline's 97.1% [96.2, 97.9] — indistinguishable. Only the 65 separate them (77.8% [68.8, 87.1] vs 93.1% [86.0, 98.6]), and that gap is the 15 "probably-land" points on one gravel bar. **Update 2026-11-16 (§15):** on the no-look labels the z rule scores 95.2% [91.4, 97.9] against the pipeline's 98.6% (paired +0.034 [0.007, 0.070]), and 0% / 4% land recall on the two strata where land lies at or below the level, so the pipeline does not merely reproduce elevation there |
+| Elevation-free surface bootstrap fixes it | Otsu over all points −7.10 dB / 61.0% balanced; over surface layers −0.46 dB / 97.2% (100% water, 94.4% land); stable across 2–4 m cells | ibid. | **confirmed on the 65** (97.2%, block CI [93.0, 100], identical at 2/3/4 m). On the regions: 96.2% [94.8, 97.6] at 3 m, and *not* cell-stable (94.2% / 96.2% / 97.4% at 2/3/4 m). All-points Otsu figure not re-measured. Sheet bootstrap on the no-look labels (§15): 97.6% [95.9, 99.1] with unlabelled counted as not-water, 69.5% when unlabelled counts as wrong (25,695 of 175,650 unlabelled; land below the level is 63% unlabelled, never called water) |
 | Flatness alone is insufficient | cell flatness: 100% water recall, ~40% land; per-point planarity reverses (water 0.61, land 0.73) | ibid. | not re-checked |
 | Pulse-length dependence of a fixed-window feature | `energy_concentration > 0.85` gate passes 48.6% of Pielach, 0.78% of Inn (153-bin vs 60-bin pulses); percentile rebase 0.294 → 13,481 candidates | ibid., failure mode 2 | hard (label-free measurement); gate 0.294 confirmed by re-run |
 | Grid anchoring matters for full-record exports | energy captured 7.8% → 87% with `grid_origin="first_return"` | ibid., failure mode 1 | hard (label-free); not re-checked |
 | Noise pedestal corrupts gap/cluster features | `n_gaps` +4.86σ → −0.81σ, `energy_ratio_late` +3.02 → +0.66 with `noise_gate` | ibid., failure mode 3 | hard (label-free); not re-checked |
-| Final Inn accuracy, per-site fit | **Base config (all three flags off), fresh fit with current code: 99.4% balanced [99.1, 99.7] vs 180,394 region-labelled points; 96.6% [91.4, 100] vs the 65 picked points.** Same config with the stale 2026-09-06 models every earlier figure used: 97.1% [96.2, 97.9] / 93.1% [86.0, 98.6]. Flags on those stale models (dev-set numbers only): +`resolve_uncertain` 98.5% / 96.6%; +`majority_filter` 99.2% / 98.3%; +`surface_prior` 99.9% / 100% | `src/diagnostics/audit_inn_labels.py` → `runs/Inn_audit_{base,ru,ru_mf,all,refit,refit_all}/audit_labels.json` | **"99.9% vs 208k hand labels" WITHDRAWN.** 208,960 is a row sum over overlapping files; 180,394 unique points. Region labels, not point labels; dev set for all three flags. Base numbers are reportable as "agreement with hand-drawn regions"; intervals are 10 m block bootstrap. See §11 Q1–Q3 |
+| Final Inn accuracy, per-site fit | **Base config (all three flags off), fresh fit with current code: 99.4% balanced [99.1, 99.7] vs 180,394 region-labelled points; 96.6% [91.4, 100] vs the 65 picked points.** Same config with the stale 2026-09-06 models every earlier figure used: 97.1% [96.2, 97.9] / 93.1% [86.0, 98.6]. Flags on those stale models (dev-set numbers only): +`resolve_uncertain` 98.5% / 96.6%; +`majority_filter` 99.2% / 98.3%; +`surface_prior` 99.9% / 100% | `src/diagnostics/audit_inn_labels.py` → `runs/Inn_audit_{base,ru,ru_mf,all,refit,refit_all}/audit_labels.json` | **"99.9% vs 208k hand labels" WITHDRAWN.** 208,960 is a row sum over overlapping files; 180,394 unique points. Region labels, not point labels; dev set for all three flags. Base numbers are reportable as "agreement with hand-drawn regions"; intervals are 10 m block bootstrap. See §11 Q1–Q3. **Superseded as the Inn headline by the no-look row below (§15)** |
+| Inn no-look test, per-site fit, base config | **98.6% balanced [98.2, 98.9]** strict scoring (abstention wrong for both classes), n = 175,650, 191 blocks, seed 42; seed 43 98.5%. Old scoring (abstention on land = right): 99.5% [99.2, 99.7]. Flags on: 99.7% (dev-era). New-only points (n = 10,826, 59 blocks): 97.1% [95.3, 98.6] | `src/diagnostics/evaluate_inn_testset.py` → `runs/inn_testset/testset_results.json`; protocol `context/inn_testset_protocol.md` (commit fe03abc) | **hard, one-shot, blind labels — but 94% of the points lie in the area of the old development regions, and the unlabelled shoreline strip (39k points) is excluded.** See §15 |
+| Pipeline beats elevation where elevation is wrong | Land 1.6 m below the level (C, n = 2,249, 10 blocks): pipeline land recall 0.920 [0.879, 0.946] / 0.922, elevation 0. Gravel spit at the level (D, n = 2,121, 8 blocks): 1.000 vs 0.040. All points (A): +0.034 [0.007, 0.070]. New-only (B): +0.024 [−0.032, 0.102] | ibid. | **pre-registered criterion met, both seeds (§15).** Limits: C lies wholly inside the old development regions; D is also solved by a bare reflectance cut (0.9995); not separable from elevation on the untouched points (B) |
+| Pipeline misses bright shallow water at the bank | `geometry-water`: 3 of 36 (seed 42), 2 of 36 (seed 43) called water; elevation 36 of 36, bootstrap 21, flags on 5–6 | ibid. | **hard but tiny** (36 points, 3 blocks; a direction, not a rate). Same shape as the Pielach margin under-call (§11 Q5); cause not diagnosed |
 | Residual error is abstention, not error | de-duplicated: of 7,743 missed water points (of 136,502), 5,518 labelled uncertain, 2,225 land/canopy | `runs/Inn_audit_base/audit_labels.json` | **confirmed** (region labels; original 7,502 / 5,395 / 2,107 double-counted overlaps) |
 | Pielach vs independent reference | point F1 0.931 (IoU 0.872, P 0.923 / R 0.940) on 25.4k coincident hard returns; 2D footprint IoU 0.597 (F1 0.748); water surface +0.32 m vs WSM, RMSE 0.35 m | `validation_results/validation_report.json` | **downgraded, still the best number.** F1 0.931 silently drops our 1,203 uncertain points (778 of them reference water). Counting abstention as a miss: **F1 0.911, P 0.923 / R 0.899, n = 26,645**. All matches fall in 28 ten-metre blocks; block-bootstrap F1 interval [0.842, 0.953] (0.931 version: [0.871, 0.969]). Only 11.4% of our points have a coincident reference return. Reference is OWP+SVB algorithm output, not human truth (§11 Q4–Q5) |
 | Independent survey points | land control 4/4; water transects 35/42; overall 84.8% (39/46) | `validation_results/`, `survey_validation_report.json` | **confirmed it ran; too small to carry a claim.** Water 35/42, Wilson 95% [0.69, 0.92], but the 42 are 5 transects in a 39 × 22 m patch and all 7 misses are the shallow ends of 3 of them. Land 4/4, Wilson [0.51, 1.00]. 0 of 8 underwater targets fall in the cloud. Use as qualitative support for the margin bias only |
@@ -846,3 +849,166 @@ noise floor. What this does **not** show:
   z-bands (shifted by the derivation), and `CleanupConfig.surface_prior`
   still reads top-surface labels; neither was touched or re-measured with
   flags on.
+
+---
+
+## 15. Inn no-look test (2026-11-16)
+
+Protocol: `context/inn_testset_protocol.md`, commit **`fe03abc`**, written
+before any fit. Script: `src/diagnostics/evaluate_inn_testset.py`, commit
+`0f23f9f`, frozen before the fits and exercised only on random labels.
+Two workers (`--worker inn_unified_seed{42,43}_rep0`), then one scoring run;
+nothing was changed or re-scored afterwards. Every number below:
+`runs/inn_testset/testset_tables.txt` / `testset_results.json`.
+`pytest -m golden` 6 passed. Branch `inn-testset`.
+
+**Labels.** `data/Inn_DeepLearning_Labels_nolook/`, drawn by the author
+without looking at pipeline output: 175,650 unique points (129,980 water,
+45,670 land), all matching cloud points exactly, no point with two labels.
+The region files carry pipeline-output columns (they were cut from an output
+cloud), so "no-look" rests on the author's statement.
+
+**Configuration.** `derive_site_config` (sheet bootstrap, 12 scalars), fresh
+feature cache, from-scratch fit, seeds 42 and 43; water level 380.76 m.
+Primary = all three flags off. Secondary = all three on, by `classify()` with
+the same models. `classify()` with flags off reproduces the fit's labels
+exactly (agreement 1.000000, both seeds); the seeds agree on 99.75% of the
+cloud's water mask.
+
+**Scoring.** Strict: a point is correct only if given its true class;
+uncertain (and bootstrap-unlabelled) is wrong whatever the truth. This is
+stricter than §11–14, where abstention on a land point counted as correct;
+that older "water-vs-rest" scoring is given for comparison only. 95%
+intervals: 2,000 resamples of 10 m blocks; differences paired.
+
+### Stratum tables (strict scoring; seed 42 / seed 43 where they differ)
+
+**A — all no-look points** (n = 175,650, 191 blocks), balanced accuracy
+
+| method | seed 42 | seed 43 |
+|---|---|---|
+| pipeline, flags off | **0.9856 [0.9817, 0.9891]** (water 0.991, land 0.980, 1.0% abstained) | 0.9848 [0.9808, 0.9883] |
+| pipeline, flags on | 0.9971 [0.9957, 0.9984] | 0.9964 [0.9947, 0.9979] |
+| bootstrap alone | 0.6952 [0.6635, 0.7411] (25,695 unlabelled) | same |
+| elevation `z < level + 0.05` | 0.9517 [0.9139, 0.9785] | same |
+| reflectance `< +0.25 dB` | 0.6931 [0.6372, 0.7742] | same |
+| pipeline off − elevation | +0.034 [0.007, 0.070] | +0.033 [0.006, 0.070] |
+| pipeline on − elevation | +0.045 [0.018, 0.083] | +0.045 [0.017, 0.083] |
+
+Water-vs-rest scoring: pipeline off 0.9947 [0.9917, 0.9971] / 0.9952,
+bootstrap 0.9763 [0.9587, 0.9911], pipeline off − elevation +0.043
+[0.016, 0.079].
+
+**B — new only** (n = 10,826: 7,563 water, 3,263 land; 59 blocks)
+
+| method | seed 42 | seed 43 |
+|---|---|---|
+| pipeline, flags off | 0.971 [0.953, 0.986] (water 0.975, land 0.967, 2.2% abstained) | 0.971 [0.955, 0.986] |
+| pipeline, flags on | 0.989 [0.982, 0.996] | 0.989 [0.983, 0.995] |
+| bootstrap alone | 0.722 [0.651, 0.810] | same |
+| elevation | 0.947 [0.876, 1.000] | same |
+| reflectance | 0.654 [0.577, 0.754] | same |
+| pipeline off − elevation | **+0.024 [−0.032, 0.102]** | +0.024 [−0.032, 0.102] |
+| pipeline on − elevation | +0.042 [−0.011, 0.115] | +0.042 [−0.011, 0.115] |
+
+Water-vs-rest: pipeline off 0.988 [0.973, 0.996], − elevation +0.040
+[−0.013, 0.112].
+
+**C — Land_below_waterline** (n = 2,249 land, 10 blocks), land recall
+
+| method | seed 42 | seed 43 |
+|---|---|---|
+| pipeline, flags off | 0.920 [0.879, 0.946] (2,070 right, 94 uncertain, 85 water) | 0.922 [0.873, 0.951] (2,073; 134; 42) |
+| pipeline, flags on | 0.997 [0.996, 1.0] | 0.999 [0.997, 1.0] |
+| bootstrap alone | 0.374 [0.224, 0.486] (841 land, 1,408 unlabelled, 0 water) | same |
+| elevation | 0.000 (0 of 2,249) | same |
+| reflectance | 0.410 [0.237, 0.522] | same |
+| pipeline off − elevation | +0.920 [0.879, 0.946] | +0.922 [0.873, 0.951] |
+
+**D — Landzunge** (n = 2,121 land, 8 blocks), land recall
+
+| method | both seeds |
+|---|---|
+| pipeline, flags off / on | 1.000 (2,121 of 2,121) |
+| bootstrap alone | 1.000 |
+| elevation | 0.040 [0.000, 0.092] (84 of 2,121) |
+| reflectance | 0.9995 (2,120) |
+| pipeline off − elevation | +0.960 [0.908, 1.000] |
+
+**E — geometry-water** (36 water points, 3 blocks; counts, no interval)
+
+| method | seed 42 | seed 43 |
+|---|---|---|
+| pipeline, flags off | **3 of 36** (1 uncertain, 32 land) | **2 of 36** (1 uncertain, 33 land) |
+| pipeline, flags on | 5 of 36 | 6 of 36 |
+| bootstrap alone | 21 of 36 (14 unlabelled) | same |
+| elevation | 36 of 36 | same |
+| reflectance | 13 of 36 | same |
+
+**Supplementary, not in the task and deciding nothing.** `Wasser4.asc`
+(2,120 water points, 13 blocks) was saved four minutes after the task
+description and is absent from its file table, so it is outside A–E. Alone
+(F): pipeline off 0.982 [0.958, 0.997] / 0.985, on 0.999, elevation and
+reflectance 1.000; pipeline off − elevation −0.018 [−0.042, −0.003] /
+−0.015 [−0.037, 0.000]. Added to A (A+, n = 177,770): pipeline off 0.9855
+[0.9816, 0.9890], unchanged to the fourth decimal.
+
+### The refutation criterion and whether it was met
+
+Stated in advance (protocol §6): the claim "where elevation is wrong by
+construction, the pipeline beats the elevation rule" is **refuted** if, under
+either seed, pipeline land recall on C does not exceed the elevation rule's
+with a paired interval clear of 0. It **holds** only if C and D are both
+beaten under both seeds and, as a guard, pipeline − elevation on A has no
+interval entirely below 0.
+
+**Not refuted; the criterion for "holds" is met**, primary configuration,
+strict scoring, both seeds: C +0.920 [0.879, 0.946] / +0.922; D +0.960
+[0.908, 1.000]; guard on A +0.034 [0.007, 0.070] / +0.033.
+
+### What this does and does not show
+
+- **Headline:** Inn, base configuration, seed 42, strict scoring: **98.6%
+  balanced accuracy [98.2, 98.9]** on 175,650 no-look points (seed 43:
+  98.5%). Under the scoring of §11–14 the same output is 99.5% [99.2, 99.7],
+  in line with the 99.4% measured on the old regions; the 0.9-point difference is land the
+  pipeline abstains on, which the older scoring counted as right.
+- **Where elevation is wrong, the pipeline is right.** Land 1.6 m below the
+  water level: 92% recognised with flags off, 99.7–99.9% with flags on, 0% by
+  elevation. The gravel spit at water level: 100% against 4%.
+- **The win on C is the learned stages, not the bootstrap or reflectance.**
+  The bootstrap labels 37% of C as land and leaves the rest unlabelled; a
+  reflectance cut gets 41%. D is different: every method except elevation
+  gets it (reflectance alone 99.95%), so D shows elevation failing more than
+  it shows the pipeline succeeding.
+- **E goes the other way, and badly.** Of the 36 bright shallow-margin points
+  the author believes are under a few cm of water, the pipeline calls 2–3
+  water and 32–33 land; elevation gets all 36, the bootstrap 21. It has the
+  same shape as the Pielach margin under-call of §11 Q5 (bright shallow
+  returns called land); whether the cause is the same `deep_proba` guard was
+  **not diagnosed** here. 36 points in 3 blocks: a direction, not a rate. "Beats elevation where elevation fails" must be
+  stated together with "loses to it on bright shallow water at the bank".
+- **On the only untouched points the pipeline is not separable from
+  elevation.** B: +0.024 [−0.032, 0.102]. The significant difference on A
+  (+0.034) comes from points in the area of the old development regions.
+- **C is new labels on old ground.** All 2,249 points of C lie inside the old
+  development regions (no new label contradicts an old one, so they were
+  already land there), and those regions steered the sheet bootstrap and the flags. C is not an
+  independent area; only its labels were drawn blind. Elevation scores 0
+  there by construction, so "beats elevation" on C is equivalent to "land
+  recall well above 0"; the informative number is the 92%, not the
+  difference.
+- **Few blocks.** C has 10 blocks and D has 8; the percentile intervals there
+  are rough.
+- **Coverage.** 94% of A (164,824 points) is also in the old labels. The
+  39,320 points the author could not label (62% within 0.5 m of the water
+  level, per the task description) are in no stratum, so every figure here
+  leaves out the hardest margin points and is optimistic there. E is the only
+  glimpse of that margin, and the pipeline fails it.
+- **Flags-on figures remain development-era.** The three flags were tuned on
+  the old regions covering the same area; 99.7% on A is not a test result.
+  It is reported because the protocol asked for it. Note the flags repair C
+  (92% → 99.7%) and do almost nothing for E (3 → 5 of 36).
+- **Wasser4** shows the pipeline about 1.5–1.8 points below elevation on
+  ordinary water (abstention plus misses); consistent with A's water recall
+  of 0.991 against elevation's 0.9998.
