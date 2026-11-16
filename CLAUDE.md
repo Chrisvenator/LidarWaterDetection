@@ -293,6 +293,29 @@ Outputs go to `runs/<dataset>/` (`Workspace`), never into the repo-level
   cloud's non-water points, so reflectance-based scores on them are inflated.
   n = 65 is small; treat them as a secondary check.
 - Score with 10 m block-bootstrap intervals, each point counted once.
+- *No-look regions* (`data/Inn_DeepLearning_Labels_nolook/*.asc`, drawn
+  2026-11-16 without looking at pipeline output): 175,650 unique points
+  (129,980 water, 45,670 land). **This is the Inn test set**; scored once
+  under a pre-registered protocol (`context/inn_testset_protocol.md`,
+  `python src/diagnostics/evaluate_inn_testset.py`, `context/paper_context.md`
+  §15). Limits to state with every number: 94% of the points lie in the area
+  of the old regions (new labels, old ground); the ~39k points nobody could
+  label, mostly the shoreline strip, are excluded, so the hardest margin is
+  missing. `Wasser4.asc` was added after the protocol's file table and is
+  supplementary only.
+
+**Inn test result (2026-11-16): 98.6% balanced accuracy [98.2, 98.9]**, base
+configuration, sheet bootstrap, seed 42 (seed 43: 98.5%), with uncertain
+counted as wrong for both classes. Under the older scoring (abstention on a
+land point counts as right) the same output is 99.5%. Elevation rule
+`z < level + 0.05 m`: 95.2% [91.4, 97.9]; paired difference +0.034
+[0.007, 0.070]. On the 10,826 points outside every old label: 97.1% against
+94.7%, difference +0.024 [-0.032, 0.102] — not separable. Where elevation is
+wrong by construction the pipeline wins: land 1.6 m below the level, recall
+0.92 against 0; gravel spit at the level, 1.00 against 0.04 (pre-registered
+criterion met, both seeds). Where it loses: 36 bright points under a few cm
+of water at the bank — pipeline 2-3 of 36, elevation 36 of 36 (the same
+`deep_proba` veto as the Pielach margin under-call).
 
 Base configuration (all three flags off), current code, fresh fit: **99.4%
 [99.1, 99.7]** on the regions, **96.6% [91.4, 100]** on the 65. All three flags
