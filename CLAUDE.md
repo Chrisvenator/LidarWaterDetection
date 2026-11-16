@@ -314,8 +314,8 @@ land point counts as right) the same output is 99.5%. Elevation rule
 wrong by construction the pipeline wins: land 1.6 m below the level, recall
 0.92 against 0; gravel spit at the level, 1.00 against 0.04 (pre-registered
 criterion met, both seeds). Where it loses: 36 bright points under a few cm
-of water at the bank — pipeline 2-3 of 36, elevation 36 of 36 (the same
-`deep_proba` veto as the Pielach margin under-call).
+of water at the bank — pipeline 2-3 of 36, elevation 36 of 36 (same shape as
+the Pielach margin under-call; cause not diagnosed on Inn).
 
 Base configuration (all three flags off), current code, fresh fit: **99.4%
 [99.1, 99.7]** on the regions, **96.6% [91.4, 100]** on the 65. All three flags

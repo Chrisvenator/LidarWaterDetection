@@ -91,7 +91,7 @@ Strength column: **hard** = measured against human/independent labels,
 | Final Inn accuracy, per-site fit | **Base config (all three flags off), fresh fit with current code: 99.4% balanced [99.1, 99.7] vs 180,394 region-labelled points; 96.6% [91.4, 100] vs the 65 picked points.** Same config with the stale 2026-09-06 models every earlier figure used: 97.1% [96.2, 97.9] / 93.1% [86.0, 98.6]. Flags on those stale models (dev-set numbers only): +`resolve_uncertain` 98.5% / 96.6%; +`majority_filter` 99.2% / 98.3%; +`surface_prior` 99.9% / 100% | `src/diagnostics/audit_inn_labels.py` → `runs/Inn_audit_{base,ru,ru_mf,all,refit,refit_all}/audit_labels.json` | **"99.9% vs 208k hand labels" WITHDRAWN.** 208,960 is a row sum over overlapping files; 180,394 unique points. Region labels, not point labels; dev set for all three flags. Base numbers are reportable as "agreement with hand-drawn regions"; intervals are 10 m block bootstrap. See §11 Q1–Q3. **Superseded as the Inn headline by the no-look row below (§15)** |
 | Inn no-look test, per-site fit, base config | **98.6% balanced [98.2, 98.9]** strict scoring (abstention wrong for both classes), n = 175,650, 191 blocks, seed 42; seed 43 98.5%. Old scoring (abstention on land = right): 99.5% [99.2, 99.7]. Flags on: 99.7% (dev-era). New-only points (n = 10,826, 59 blocks): 97.1% [95.3, 98.6] | `src/diagnostics/evaluate_inn_testset.py` → `runs/inn_testset/testset_results.json`; protocol `context/inn_testset_protocol.md` (commit fe03abc) | **hard, one-shot, blind labels — but 94% of the points lie in the area of the old development regions, and the unlabelled shoreline strip (39k points) is excluded.** See §15 |
 | Pipeline beats elevation where elevation is wrong | Land 1.6 m below the level (C, n = 2,249, 10 blocks): pipeline land recall 0.920 [0.879, 0.946] / 0.922, elevation 0. Gravel spit at the level (D, n = 2,121, 8 blocks): 1.000 vs 0.040. All points (A): +0.034 [0.007, 0.070]. New-only (B): +0.024 [−0.032, 0.102] | ibid. | **pre-registered criterion met, both seeds (§15).** Limits: C lies wholly inside the old development regions; D is also solved by a bare reflectance cut (0.9995); not separable from elevation on the untouched points (B) |
-| Pipeline misses bright shallow water at the bank | `geometry-water`: 3 of 36 (seed 42), 2 of 36 (seed 43) called water; elevation 36 of 36, bootstrap 21, flags on 5–6 | ibid. | **hard but tiny** (36 points, 3 blocks; a direction, not a rate). Same mechanism as the Pielach margin under-call (§11 Q5) |
+| Pipeline misses bright shallow water at the bank | `geometry-water`: 3 of 36 (seed 42), 2 of 36 (seed 43) called water; elevation 36 of 36, bootstrap 21, flags on 5–6 | ibid. | **hard but tiny** (36 points, 3 blocks; a direction, not a rate). Same shape as the Pielach margin under-call (§11 Q5); cause not diagnosed |
 | Residual error is abstention, not error | de-duplicated: of 7,743 missed water points (of 136,502), 5,518 labelled uncertain, 2,225 land/canopy | `runs/Inn_audit_base/audit_labels.json` | **confirmed** (region labels; original 7,502 / 5,395 / 2,107 double-counted overlaps) |
 | Pielach vs independent reference | point F1 0.931 (IoU 0.872, P 0.923 / R 0.940) on 25.4k coincident hard returns; 2D footprint IoU 0.597 (F1 0.748); water surface +0.32 m vs WSM, RMSE 0.35 m | `validation_results/validation_report.json` | **downgraded, still the best number.** F1 0.931 silently drops our 1,203 uncertain points (778 of them reference water). Counting abstention as a miss: **F1 0.911, P 0.923 / R 0.899, n = 26,645**. All matches fall in 28 ten-metre blocks; block-bootstrap F1 interval [0.842, 0.953] (0.931 version: [0.871, 0.969]). Only 11.4% of our points have a coincident reference return. Reference is OWP+SVB algorithm output, not human truth (§11 Q4–Q5) |
 | Independent survey points | land control 4/4; water transects 35/42; overall 84.8% (39/46) | `validation_results/`, `survey_validation_report.json` | **confirmed it ran; too small to carry a claim.** Water 35/42, Wilson 95% [0.69, 0.92], but the 42 are 5 transects in a 39 × 22 m patch and all 7 misses are the shallow ends of 3 of them. Land 4/4, Wilson [0.51, 1.00]. 0 of 8 underwater targets fall in the cloud. Use as qualitative support for the margin bias only |
@@ -971,7 +971,7 @@ strict scoring, both seeds: C +0.920 [0.879, 0.946] / +0.922; D +0.960
 - **Headline:** Inn, base configuration, seed 42, strict scoring: **98.6%
   balanced accuracy [98.2, 98.9]** on 175,650 no-look points (seed 43:
   98.5%). Under the scoring of §11–14 the same output is 99.5% [99.2, 99.7],
-  i.e. the old 99.4% reproduces; the 0.9-point difference is land the
+  in line with the 99.4% measured on the old regions; the 0.9-point difference is land the
   pipeline abstains on, which the older scoring counted as right.
 - **Where elevation is wrong, the pipeline is right.** Land 1.6 m below the
   water level: 92% recognised with flags off, 99.7–99.9% with flags on, 0% by
@@ -983,17 +983,17 @@ strict scoring, both seeds: C +0.920 [0.879, 0.946] / +0.922; D +0.960
   it shows the pipeline succeeding.
 - **E goes the other way, and badly.** Of the 36 bright shallow-margin points
   the author believes are under a few cm of water, the pipeline calls 2–3
-  water and 32–33 land; elevation gets all 36, the bootstrap 21. This is the
-  §11 Q5 margin under-call (the `deep_proba` guard letting the waveform
-  ensemble veto geometry) reproduced on a second site. 36 points in 3 blocks:
-  a direction, not a rate. "Beats elevation where elevation fails" must be
+  water and 32–33 land; elevation gets all 36, the bootstrap 21. It has the
+  same shape as the Pielach margin under-call of §11 Q5 (bright shallow
+  returns called land); whether the cause is the same `deep_proba` guard was
+  **not diagnosed** here. 36 points in 3 blocks: a direction, not a rate. "Beats elevation where elevation fails" must be
   stated together with "loses to it on bright shallow water at the bank".
 - **On the only untouched points the pipeline is not separable from
   elevation.** B: +0.024 [−0.032, 0.102]. The significant difference on A
   (+0.034) comes from points in the area of the old development regions.
 - **C is new labels on old ground.** All 2,249 points of C lie inside the old
-  development regions (which already had them as land, `dry_riverbed_(land)`),
-  and those regions steered the sheet bootstrap and the flags. C is not an
+  development regions (no new label contradicts an old one, so they were
+  already land there), and those regions steered the sheet bootstrap and the flags. C is not an
   independent area; only its labels were drawn blind. Elevation scores 0
   there by construction, so "beats elevation" on C is equivalent to "land
   recall well above 0"; the informative number is the 92%, not the
